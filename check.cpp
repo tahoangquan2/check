@@ -1,8 +1,17 @@
+#include <fcntl.h>
+#include <netdb.h>
+#include <pwd.h>
+#include <sys/statvfs.h>
+#include <sys/types.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -11,22 +20,14 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
-#include <netdb.h>
+#include <numeric>
 #include <optional>
-#include <pwd.h>
 #include <sstream>
 #include <string>
-#include <sys/statvfs.h>
-#include <sys/types.h>
-#include <sys/utsname.h>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
-#include <fcntl.h>
-#include <limits>
-#include <numeric>
 
 namespace fs = std::filesystem;
 
@@ -36,21 +37,16 @@ constexpr const char *BOLD = "\033[1m";
 constexpr const char *RED = "\033[31m";
 constexpr const char *GREEN = "\033[32m";
 constexpr const char *YELLOW = "\033[33m";
-constexpr const char *BLUE = "\033[34m";
 constexpr const char *MAGENTA = "\033[35m";
 constexpr const char *CYAN = "\033[36m";
-} // namespace ansi
+}  // namespace ansi
 
 struct CommandResult {
     int exit_code = -1;
     std::string output;
 };
 
-enum class CheckState {
-    Pass,
-    Fail,
-    Unavailable
-};
+enum class CheckState { Pass, Fail, Unavailable };
 
 struct SimpleCheck {
     CheckState state = CheckState::Unavailable;
@@ -63,13 +59,11 @@ std::string colorize(const std::string &text, const char *color) {
 
 std::string trim(const std::string &input) {
     std::size_t start = 0;
-    while (start < input.size() &&
-           std::isspace(static_cast<unsigned char>(input[start])) != 0) {
+    while (start < input.size() && std::isspace(static_cast<unsigned char>(input[start])) != 0) {
         ++start;
     }
     std::size_t end = input.size();
-    while (end > start &&
-           std::isspace(static_cast<unsigned char>(input[end - 1])) != 0) {
+    while (end > start && std::isspace(static_cast<unsigned char>(input[end - 1])) != 0) {
         --end;
     }
     return input.substr(start, end - start);
@@ -86,9 +80,8 @@ std::string toLower(std::string value) {
 }
 
 bool isDigits(const std::string &value) {
-    return !value.empty() &&
-           std::all_of(value.begin(), value.end(),
-                       [](unsigned char c) { return std::isdigit(c) != 0; });
+    return !value.empty() && std::all_of(value.begin(), value.end(),
+                                         [](unsigned char c) { return std::isdigit(c) != 0; });
 }
 
 std::optional<std::string> readFile(const std::string &path) {
@@ -365,13 +358,11 @@ std::vector<BatteryInfo> collectBatteries() {
         info.voltage_now = readLongFromFile((entry / "voltage_now").string());
 
         if (info.charge_full && info.charge_full_design && *info.charge_full_design > 0) {
-            info.health_percent =
-                (100.0 * static_cast<double>(*info.charge_full)) /
-                static_cast<double>(*info.charge_full_design);
+            info.health_percent = (100.0 * static_cast<double>(*info.charge_full)) /
+                                  static_cast<double>(*info.charge_full_design);
         } else if (info.energy_full && info.energy_full_design && *info.energy_full_design > 0) {
-            info.health_percent =
-                (100.0 * static_cast<double>(*info.energy_full)) /
-                static_cast<double>(*info.energy_full_design);
+            info.health_percent = (100.0 * static_cast<double>(*info.energy_full)) /
+                                  static_cast<double>(*info.energy_full_design);
         }
         batteries.push_back(info);
     }
@@ -401,15 +392,13 @@ void printBatterySection() {
         for (const auto &battery : batteries) {
             printSubHeader("Battery " + battery.name);
             printKeyValue("Status", battery.status);
-            printKeyValue("Capacity",
-                          battery.capacity ? colorByPercent(static_cast<double>(*battery.capacity))
-                                           : colorize("N/A", ansi::YELLOW));
-            printKeyValue("Cycle Count",
-                          battery.cycle_count ? std::to_string(*battery.cycle_count)
-                                              : colorize("N/A", ansi::YELLOW));
-            printKeyValue("Health",
-                          battery.health_percent ? colorByPercent(*battery.health_percent)
-                                                 : colorize("N/A", ansi::YELLOW));
+            printKeyValue("Capacity", battery.capacity
+                                          ? colorByPercent(static_cast<double>(*battery.capacity))
+                                          : colorize("N/A", ansi::YELLOW));
+            printKeyValue("Cycle Count", battery.cycle_count ? std::to_string(*battery.cycle_count)
+                                                             : colorize("N/A", ansi::YELLOW));
+            printKeyValue("Health", battery.health_percent ? colorByPercent(*battery.health_percent)
+                                                           : colorize("N/A", ansi::YELLOW));
             if (battery.voltage_now) {
                 std::ostringstream voltage;
                 voltage << std::fixed << std::setprecision(2)
@@ -427,11 +416,10 @@ void printBatterySection() {
     } else {
         printSubHeader("AC Adapters");
         for (const auto &adapter : adapters) {
-            const std::string state =
-                adapter.second
-                    ? (*adapter.second == 1 ? colorize("Online", ansi::GREEN)
-                                            : colorize("Offline", ansi::RED))
-                    : colorize("N/A", ansi::YELLOW);
+            const std::string state = adapter.second
+                                          ? (*adapter.second == 1 ? colorize("Online", ansi::GREEN)
+                                                                  : colorize("Offline", ansi::RED))
+                                          : colorize("N/A", ansi::YELLOW);
             printKeyValue(adapter.first, state);
         }
     }
@@ -477,8 +465,7 @@ CpuTimes readCpuTimes() {
     }
 
     times.idle_all = idle + iowait;
-    times.total = user + nice + system + idle + iowait + irq + softirq + steal + guest +
-                  guest_nice;
+    times.total = user + nice + system + idle + iowait + irq + softirq + steal + guest + guest_nice;
     times.valid = true;
     return times;
 }
@@ -671,8 +658,8 @@ std::vector<ProcessUsage> getTopProcesses(const std::string &sort_key, std::size
 
 void printTopProcessTable(const std::vector<ProcessUsage> &rows) {
     std::cout << "    " << std::right << std::setw(8) << "PID"
-              << " " << std::left << std::setw(16) << "COMMAND" << std::right
-              << std::setw(6) << "%CPU" << std::setw(6) << "%MEM" << "\n";
+              << " " << std::left << std::setw(16) << "COMMAND" << std::right << std::setw(6)
+              << "%CPU" << std::setw(6) << "%MEM" << "\n";
 
     for (const auto &row : rows) {
         std::ostringstream cpu_text;
@@ -682,8 +669,8 @@ void printTopProcessTable(const std::vector<ProcessUsage> &rows) {
         mem_text << std::fixed << std::setprecision(1) << row.mem;
 
         std::cout << "    " << std::right << std::setw(8) << row.pid << " " << std::left
-                  << std::setw(16) << row.command << std::right << std::setw(6)
-                  << cpu_text.str() << std::setw(6) << mem_text.str() << "\n";
+                  << std::setw(16) << row.command << std::right << std::setw(6) << cpu_text.str()
+                  << std::setw(6) << mem_text.str() << "\n";
     }
     std::cout << std::left;
 }
@@ -693,7 +680,8 @@ void printRuntimeSection() {
 
     const CpuIdentity cpu = getCpuIdentity();
     printKeyValue("CPU Model", cpu.model);
-    printKeyValue("CPU Cores", cpu.cores > 0 ? std::to_string(cpu.cores) : colorize("N/A", ansi::YELLOW));
+    printKeyValue("CPU Cores",
+                  cpu.cores > 0 ? std::to_string(cpu.cores) : colorize("N/A", ansi::YELLOW));
 
     const auto cpu_usage = sampleCpuUsagePercent();
     printKeyValue("CPU Usage (500ms sample)",
@@ -721,20 +709,18 @@ void printRuntimeSection() {
 
     const long long swap_total = mem.count("SwapTotal") > 0 ? mem.at("SwapTotal") : -1;
     const long long swap_free = mem.count("SwapFree") > 0 ? mem.at("SwapFree") : -1;
-    const long long swap_used =
-        (swap_total >= 0 && swap_free >= 0) ? (swap_total - swap_free) : -1;
+    const long long swap_used = (swap_total >= 0 && swap_free >= 0) ? (swap_total - swap_free) : -1;
 
-    printKeyValue("RAM Total", mem_total >= 0 ? formatKilobytes(mem_total)
-                                              : colorize("N/A", ansi::YELLOW));
-    printKeyValue("RAM Used", mem_used >= 0 ? formatKilobytes(mem_used)
-                                            : colorize("N/A", ansi::YELLOW));
-    printKeyValue("RAM Available",
-                  mem_available >= 0 ? formatKilobytes(mem_available)
-                                     : colorize("N/A", ansi::YELLOW));
-    printKeyValue("Swap Total", swap_total >= 0 ? formatKilobytes(swap_total)
-                                                : colorize("N/A", ansi::YELLOW));
-    printKeyValue("Swap Used", swap_used >= 0 ? formatKilobytes(swap_used)
-                                              : colorize("N/A", ansi::YELLOW));
+    printKeyValue("RAM Total",
+                  mem_total >= 0 ? formatKilobytes(mem_total) : colorize("N/A", ansi::YELLOW));
+    printKeyValue("RAM Used",
+                  mem_used >= 0 ? formatKilobytes(mem_used) : colorize("N/A", ansi::YELLOW));
+    printKeyValue("RAM Available", mem_available >= 0 ? formatKilobytes(mem_available)
+                                                      : colorize("N/A", ansi::YELLOW));
+    printKeyValue("Swap Total",
+                  swap_total >= 0 ? formatKilobytes(swap_total) : colorize("N/A", ansi::YELLOW));
+    printKeyValue("Swap Used",
+                  swap_used >= 0 ? formatKilobytes(swap_used) : colorize("N/A", ansi::YELLOW));
 
     const auto uptime = readUptimeSeconds();
     printKeyValue("Uptime", uptime ? formatUptime(*uptime) : colorize("N/A", ansi::YELLOW));
@@ -766,8 +752,7 @@ SimpleCheck checkPing(const std::string &host, int probe_count = 3) {
     }
 
     const int probes = std::max(1, probe_count);
-    const std::string cmd =
-        "ping -c " + std::to_string(probes) + " -W 2 " + host + " 2>/dev/null";
+    const std::string cmd = "ping -c " + std::to_string(probes) + " -W 2 " + host + " 2>/dev/null";
     const auto result = runCommand(cmd);
     if (result.exit_code != 0) {
         return {CheckState::Fail, "host unreachable"};
@@ -849,8 +834,7 @@ void printTailscaleInternetInfo() {
     if (fs::exists("/sys/class/net/tailscale0")) {
         const std::string state =
             readFirstLine("/sys/class/net/tailscale0/operstate").value_or("N/A");
-        const std::string mac =
-            readFirstLine("/sys/class/net/tailscale0/address").value_or("N/A");
+        const std::string mac = readFirstLine("/sys/class/net/tailscale0/address").value_or("N/A");
         printKeyValue("tailscale0 Interface", "present (state=" + state + ", mac=" + mac + ")");
     } else {
         printKeyValue("tailscale0 Interface", colorize("not found", ansi::YELLOW));
@@ -890,9 +874,9 @@ void printInternetSection() {
     printSectionHeader("INTERNET");
 
     printSubHeader("Ping Stress Check (3 probes each)");
-    const std::vector<std::string> ping_hosts = {
-        "1.1.1.1", "8.8.8.8", "youtube.com", "codeforces.com",
-        "github.com", "quanquanque.dev", "atcoder.jp"};
+    const std::vector<std::string> ping_hosts = {"1.1.1.1",        "8.8.8.8",    "youtube.com",
+                                                 "codeforces.com", "github.com", "quanquanque.dev",
+                                                 "atcoder.jp"};
     for (const auto &host : ping_hosts) {
         const auto ping = checkPing(host, 3);
         printKeyValue("Ping " + host, stateLabel(ping.state) + " - " + ping.detail);
@@ -916,7 +900,7 @@ struct DiskUsage {
 
 DiskUsage getRootDiskUsage() {
     DiskUsage usage;
-    struct statvfs stats {};
+    struct statvfs stats{};
     if (::statvfs("/", &stats) != 0) {
         return usage;
     }
@@ -1142,8 +1126,7 @@ void printImportantHealthSection() {
 
     printSubHeader("Storage Devices");
     if (commandExists("lsblk")) {
-        const auto blk = runCommand(
-            "lsblk -o NAME,TYPE,SIZE,MODEL,TRAN,MOUNTPOINT 2>/dev/null");
+        const auto blk = runCommand("lsblk -o NAME,TYPE,SIZE,MODEL,TRAN,MOUNTPOINT 2>/dev/null");
         if (blk.exit_code == 0 && !trim(blk.output).empty()) {
             printBlockLines(blk.output);
         } else {
@@ -1171,9 +1154,8 @@ std::string getOsPrettyName() {
         }
         std::string value = line.substr(std::strlen("PRETTY_NAME="));
         value = trim(value);
-        if (value.size() >= 2 &&
-            ((value.front() == '"' && value.back() == '"') ||
-             (value.front() == '\'' && value.back() == '\''))) {
+        if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') ||
+                                  (value.front() == '\'' && value.back() == '\''))) {
             value = value.substr(1, value.size() - 2);
         }
         return value;
@@ -1220,7 +1202,7 @@ std::string getUserCount() {
 
 std::string getLocalTimestamp() {
     const std::time_t now = std::time(nullptr);
-    std::tm local_tm {};
+    std::tm local_tm{};
     if (::localtime_r(&now, &local_tm) == nullptr) {
         return "N/A";
     }
@@ -1269,7 +1251,8 @@ std::string detectVirtualization() {
     if (combined.find("virtualbox") != std::string::npos) {
         return "virtualbox";
     }
-    if (combined.find("hyper-v") != std::string::npos || combined.find("microsoft") != std::string::npos) {
+    if (combined.find("hyper-v") != std::string::npos ||
+        combined.find("microsoft") != std::string::npos) {
         return "hyper-v";
     }
 
@@ -1352,7 +1335,7 @@ void printMachineDumpSection() {
 
     printKeyValue("OS", getOsPrettyName());
 
-    struct utsname uname_data {};
+    struct utsname uname_data{};
     if (::uname(&uname_data) == 0) {
         printKeyValue("Kernel", uname_data.release);
         printKeyValue("Architecture", uname_data.machine);

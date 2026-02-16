@@ -632,27 +632,60 @@ std::pair<int, long long> countProcessesAndThreads() {
     return {process_count, thread_count};
 }
 
-std::vector<std::string> getTopProcessesByCpu() {
-    std::vector<std::string> lines_out;
+struct ProcessUsage {
+    int pid = -1;
+    std::string command;
+    double cpu = 0.0;
+    double mem = 0.0;
+};
+
+std::vector<ProcessUsage> getTopProcesses(const std::string &sort_key, std::size_t top_n) {
+    std::vector<ProcessUsage> rows;
     if (!commandExists("ps")) {
-        return lines_out;
+        return rows;
     }
 
-    const auto result = runCommand("ps -eo pid,comm,%cpu,%mem --sort=-%cpu 2>/dev/null");
+    std::string cmd = "ps -eo pid=,comm=,%cpu=,%mem= --sort=-" + sort_key + " 2>/dev/null";
+    const auto result = runCommand(cmd);
     if (result.exit_code != 0) {
-        return lines_out;
+        return rows;
     }
 
     const auto lines = splitLines(result.output);
     for (const auto &line : lines) {
-        if (!line.empty()) {
-            lines_out.push_back(line);
-            if (lines_out.size() >= 6) {
-                break;
-            }
+        if (line.empty()) {
+            continue;
+        }
+        std::istringstream parser(line);
+        ProcessUsage process;
+        if (!(parser >> process.pid >> process.command >> process.cpu >> process.mem)) {
+            continue;
+        }
+        rows.push_back(process);
+        if (rows.size() >= top_n) {
+            break;
         }
     }
-    return lines_out;
+    return rows;
+}
+
+void printTopProcessTable(const std::vector<ProcessUsage> &rows) {
+    std::cout << "    " << std::right << std::setw(8) << "PID"
+              << " " << std::left << std::setw(16) << "COMMAND" << std::right
+              << std::setw(6) << "%CPU" << std::setw(6) << "%MEM" << "\n";
+
+    for (const auto &row : rows) {
+        std::ostringstream cpu_text;
+        cpu_text << std::fixed << std::setprecision(1) << row.cpu;
+
+        std::ostringstream mem_text;
+        mem_text << std::fixed << std::setprecision(1) << row.mem;
+
+        std::cout << "    " << std::right << std::setw(8) << row.pid << " " << std::left
+                  << std::setw(16) << row.command << std::right << std::setw(6)
+                  << cpu_text.str() << std::setw(6) << mem_text.str() << "\n";
+    }
+    std::cout << std::left;
 }
 
 void printRuntimeSection() {
@@ -710,23 +743,31 @@ void printRuntimeSection() {
     printKeyValue("Process Count", std::to_string(processes));
     printKeyValue("Thread Count", std::to_string(threads));
 
-    const auto top = getTopProcessesByCpu();
-    if (top.empty()) {
-        printKeyValue("Top Processes", colorize("UNAVAILABLE", ansi::YELLOW));
+    const auto top_cpu = getTopProcesses("%cpu", 10);
+    if (top_cpu.empty()) {
+        printKeyValue("Top CPU Processes", colorize("UNAVAILABLE", ansi::YELLOW));
     } else {
-        printSubHeader("Top 5 Processes (by CPU)");
-        for (const auto &line : top) {
-            std::cout << "    " << line << "\n";
-        }
+        printSubHeader("Top 10 Processes (by CPU)");
+        printTopProcessTable(top_cpu);
+    }
+
+    const auto top_ram = getTopProcesses("%mem", 10);
+    if (top_ram.empty()) {
+        printKeyValue("Top RAM Processes", colorize("UNAVAILABLE", ansi::YELLOW));
+    } else {
+        printSubHeader("Top 10 Processes (by RAM)");
+        printTopProcessTable(top_ram);
     }
 }
 
-SimpleCheck checkPing(const std::string &host) {
+SimpleCheck checkPing(const std::string &host, int probe_count = 3) {
     if (!commandExists("ping")) {
         return {CheckState::Unavailable, "ping command not found"};
     }
 
-    const std::string cmd = "ping -c 1 -W 2 " + host + " 2>/dev/null";
+    const int probes = std::max(1, probe_count);
+    const std::string cmd =
+        "ping -c " + std::to_string(probes) + " -W 2 " + host + " 2>/dev/null";
     const auto result = runCommand(cmd);
     if (result.exit_code != 0) {
         return {CheckState::Fail, "host unreachable"};
@@ -802,33 +843,68 @@ SimpleCheck checkHttpLatency() {
     return {CheckState::Fail, "unable to parse latency"};
 }
 
+void printTailscaleInternetInfo() {
+    printSubHeader("Tailscale");
+
+    if (fs::exists("/sys/class/net/tailscale0")) {
+        const std::string state =
+            readFirstLine("/sys/class/net/tailscale0/operstate").value_or("N/A");
+        const std::string mac =
+            readFirstLine("/sys/class/net/tailscale0/address").value_or("N/A");
+        printKeyValue("tailscale0 Interface", "present (state=" + state + ", mac=" + mac + ")");
+    } else {
+        printKeyValue("tailscale0 Interface", colorize("not found", ansi::YELLOW));
+    }
+
+    if (!commandExists("tailscale")) {
+        printKeyValue("tailscale CLI", colorize("UNAVAILABLE", ansi::YELLOW));
+        return;
+    }
+
+    printKeyValue("tailscale CLI", colorize("available", ansi::GREEN));
+
+    const auto ip4 = runCommand("tailscale ip -4 2>/dev/null");
+    if (ip4.exit_code == 0 && !trim(ip4.output).empty()) {
+        printKeyValue("Tailscale IPv4", trim(ip4.output));
+    } else {
+        printKeyValue("Tailscale IPv4", colorize("N/A", ansi::YELLOW));
+    }
+
+    const auto ip6 = runCommand("tailscale ip -6 2>/dev/null");
+    if (ip6.exit_code == 0 && !trim(ip6.output).empty()) {
+        printKeyValue("Tailscale IPv6", trim(ip6.output));
+    } else {
+        printKeyValue("Tailscale IPv6", colorize("N/A", ansi::YELLOW));
+    }
+
+    const auto netcheck = runCommand("tailscale netcheck 2>/dev/null | head -n 12");
+    if (netcheck.exit_code == 0 && !trim(netcheck.output).empty()) {
+        printSubHeader("Tailscale Netcheck");
+        printBlockLines(netcheck.output);
+    } else {
+        printKeyValue("Tailscale Netcheck", colorize("UNAVAILABLE", ansi::YELLOW));
+    }
+}
+
 void printInternetSection() {
     printSectionHeader("INTERNET");
 
-    printSubHeader("Interface / IP Summary (`ip -br addr`)");
-    if (commandExists("ip")) {
-        const auto result = runCommand("ip -br addr 2>/dev/null");
-        if (result.exit_code == 0 && !trim(result.output).empty()) {
-            printBlockLines(result.output);
-        } else {
-            std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
-        }
-    } else {
-        std::cout << "    " << colorize("UNAVAILABLE (ip command not found)", ansi::YELLOW)
-                  << "\n";
+    printSubHeader("Ping Stress Check (3 probes each)");
+    const std::vector<std::string> ping_hosts = {
+        "1.1.1.1", "8.8.8.8", "youtube.com", "codeforces.com",
+        "github.com", "quanquanque.dev", "atcoder.jp"};
+    for (const auto &host : ping_hosts) {
+        const auto ping = checkPing(host, 3);
+        printKeyValue("Ping " + host, stateLabel(ping.state) + " - " + ping.detail);
     }
-
-    const SimpleCheck ping_1 = checkPing("1.1.1.1");
-    printKeyValue("Ping 1.1.1.1", stateLabel(ping_1.state) + " - " + ping_1.detail);
-
-    const SimpleCheck ping_2 = checkPing("8.8.8.8");
-    printKeyValue("Ping 8.8.8.8", stateLabel(ping_2.state) + " - " + ping_2.detail);
 
     const SimpleCheck dns = checkDns();
     printKeyValue("DNS (example.com)", stateLabel(dns.state) + " - " + dns.detail);
 
     const SimpleCheck http = checkHttpLatency();
     printKeyValue("HTTP (https://example.com)", stateLabel(http.state) + " - " + http.detail);
+
+    printTailscaleInternetInfo();
 }
 
 struct DiskUsage {
@@ -978,7 +1054,7 @@ void printPowerSupplySummary() {
 }
 
 void printNetworkInterfacesFromSysfs() {
-    printSubHeader("Network Interfaces (all)");
+    printSubHeader("Network Interfaces");
     const auto entries = listDirectory("/sys/class/net");
     if (entries.empty()) {
         std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
@@ -1005,7 +1081,7 @@ void printImportantHealthSection() {
         printKeyValue("Root Disk Usage", colorize("UNAVAILABLE", ansi::YELLOW));
     }
 
-    printSubHeader("Disk Write Micro-Benchmark (2 runs x 128MB)");
+    printSubHeader("Disk Write Micro-Benchmark (128MB)");
     std::vector<double> benchmark_results;
     for (int i = 1; i <= 2; ++i) {
         const auto run = runSingleWriteBenchmark(128, i);
@@ -1051,7 +1127,7 @@ void printImportantHealthSection() {
         }
     }
 
-    printSubHeader("USB Devices (`lsusb`)");
+    printSubHeader("USB Devices");
     if (commandExists("lsusb")) {
         const auto usb = runCommand("lsusb 2>/dev/null");
         if (usb.exit_code == 0 && !trim(usb.output).empty()) {
@@ -1060,11 +1136,11 @@ void printImportantHealthSection() {
             std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
         }
     } else {
-        std::cout << "    " << colorize("UNAVAILABLE (lsusb command not found)", ansi::YELLOW)
+        std::cout << "    " << colorize("UNAVAILABLE: lsusb command not found", ansi::YELLOW)
                   << "\n";
     }
 
-    printSubHeader("Storage Devices (`lsblk`)");
+    printSubHeader("Storage Devices");
     if (commandExists("lsblk")) {
         const auto blk = runCommand(
             "lsblk -o NAME,TYPE,SIZE,MODEL,TRAN,MOUNTPOINT 2>/dev/null");
@@ -1074,7 +1150,7 @@ void printImportantHealthSection() {
             std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
         }
     } else {
-        std::cout << "    " << colorize("UNAVAILABLE (lsblk command not found)", ansi::YELLOW)
+        std::cout << "    " << colorize("UNAVAILABLE: lsblk command not found", ansi::YELLOW)
                   << "\n";
     }
 
@@ -1124,6 +1200,22 @@ std::string getCurrentUser() {
         return "N/A";
     }
     return pw->pw_name;
+}
+
+std::string getUserCount() {
+    std::ifstream passwd_file("/etc/passwd");
+    if (!passwd_file) {
+        return colorize("N/A", ansi::YELLOW);
+    }
+
+    std::size_t count = 0;
+    std::string line;
+    while (std::getline(passwd_file, line)) {
+        if (!trim(line).empty()) {
+            ++count;
+        }
+    }
+    return std::to_string(count);
 }
 
 std::string getLocalTimestamp() {
@@ -1210,6 +1302,51 @@ std::pair<std::string, std::string> getDefaultRouteAndInterface() {
     return {route, iface};
 }
 
+struct PackageInventory {
+    std::string manager = "N/A";
+    std::vector<std::string> packages;
+};
+
+PackageInventory collectInstalledPackages() {
+    PackageInventory inventory;
+
+    struct PackageCommand {
+        std::string manager;
+        std::string executable;
+        std::string command;
+    };
+
+    const std::vector<PackageCommand> commands = {
+        {"dpkg", "dpkg-query", R"(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null)"},
+        {"rpm", "rpm", "rpm -qa 2>/dev/null"},
+        {"pacman", "pacman", "pacman -Qq 2>/dev/null"},
+        {"apk", "apk", "apk info 2>/dev/null"},
+    };
+
+    for (const auto &candidate : commands) {
+        if (!commandExists(candidate.executable)) {
+            continue;
+        }
+        const auto result = runCommand(candidate.command);
+        if (result.exit_code != 0 || trim(result.output).empty()) {
+            continue;
+        }
+
+        inventory.manager = candidate.manager;
+        const auto lines = splitLines(result.output);
+        for (const auto &line : lines) {
+            if (!line.empty()) {
+                inventory.packages.push_back(line);
+            }
+        }
+        if (!inventory.packages.empty()) {
+            return inventory;
+        }
+    }
+
+    return inventory;
+}
+
 void printMachineDumpSection() {
     printSectionHeader("INFO DUMP");
 
@@ -1226,17 +1363,25 @@ void printMachineDumpSection() {
 
     printKeyValue("Hostname", getHostname());
     printKeyValue("Current User", getCurrentUser());
+    printKeyValue("User Count", getUserCount());
     printKeyValue("Timestamp", getLocalTimestamp());
     printKeyValue("Virtualization", detectVirtualization());
 
     const auto [route, iface] = getDefaultRouteAndInterface();
     printKeyValue("Default Interface", iface);
     printKeyValue("Default Route", route);
+
+    printSubHeader("Installed Packages");
+    const auto packages = collectInstalledPackages();
+    if (packages.manager == "N/A" || packages.packages.empty()) {
+        printKeyValue("Package Inventory", colorize("UNAVAILABLE", ansi::YELLOW));
+    } else {
+        printKeyValue("Package Manager", packages.manager);
+        printKeyValue("Package Count", std::to_string(packages.packages.size()));
+    }
 }
 
 int main() {
-    std::cout << ansi::BOLD << ansi::BLUE << "check - machine health report" << ansi::RESET << "\n";
-
     printBatterySection();
     printRuntimeSection();
     printInternetSection();

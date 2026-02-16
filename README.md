@@ -14,7 +14,7 @@ clang++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-except
 ./check
 ```
 
-## Install as a command (user-local, no sudo)
+## Install as a command
 
 ```bash
 mkdir -p ~/.local/bin
@@ -22,20 +22,13 @@ cp ./check ~/.local/bin/check
 chmod +x ~/.local/bin/check
 ```
 
-## Add `~/.local/bin` to PATH (Linux)
+## Add `~/.local/bin` to PATH
 
 For bash:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
-```
-
-For zsh:
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
 ```
 
 ## Verify command works everywhere in terminal sessions

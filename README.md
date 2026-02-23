@@ -5,7 +5,7 @@ Single-file Linux machine health CLI written in C++ (`check.cpp`).
 ## Compile with clang
 
 ```bash
-clang++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-exceptions -fno-rtti -Wall -Wextra -pedantic check.cpp -o check
+clang++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-exceptions -fno-rtti -Wall -Wextra -pedantic check.cpp -pthread -o check
 ```
 
 ## Run

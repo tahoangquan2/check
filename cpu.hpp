@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pthread.h>
+
 #include <chrono>
 #include <thread>
 
@@ -129,6 +131,28 @@ inline std::optional<std::array<double, 3>> readLoadAverage() {
     return values;
 }
 
+inline std::optional<double> runMicroBenchmarkOnCore(int core_id) {
+    std::optional<double> result;
+    std::thread t([&result, core_id]() {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(core_id, &cpuset);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+            return;
+        }
+
+        auto start = std::chrono::steady_clock::now();
+        volatile double dummy = 1.0;
+        for (int i = 0; i < 10000000; ++i) {
+            dummy *= 1.000001;
+        }
+        auto end = std::chrono::steady_clock::now();
+        result = std::chrono::duration<double, std::milli>(end - start).count();
+    });
+    t.join();
+    return result;
+}
+
 inline void printCpuSection() {
     printSectionHeader("CPU");
 
@@ -149,6 +173,23 @@ inline void printCpuSection() {
         printKeyValue("Load Average (1/5/15m)", out.str());
     } else {
         printKeyValue("Load Average (1/5/15m)", colorize("N/A", ansi::YELLOW));
+    }
+
+    if (cpu.cores > 0) {
+        printSubHeader("Per-Core Micro-Benchmark (10M ops)");
+        for (int i = 0; i < cpu.cores; ++i) {
+            const auto bench = runMicroBenchmarkOnCore(i);
+            std::ostringstream label;
+            label << "Core " << i;
+            if (bench) {
+                std::ostringstream out;
+                out << std::fixed << std::setprecision(2) << *bench << " ms ("
+                    << colorize("WORKING", ansi::GREEN) << ")";
+                printKeyValue(label.str(), out.str());
+            } else {
+                printKeyValue(label.str(), colorize("FAIL", ansi::RED));
+            }
+        }
     }
 
     const auto top_cpu = getTopProcesses("%cpu", 10);

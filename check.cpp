@@ -32,13 +32,13 @@
 namespace fs = std::filesystem;
 
 namespace ansi {
-constexpr const char *RESET = "\033[0m";
-constexpr const char *BOLD = "\033[1m";
-constexpr const char *RED = "\033[31m";
-constexpr const char *GREEN = "\033[32m";
-constexpr const char *YELLOW = "\033[33m";
-constexpr const char *MAGENTA = "\033[35m";
-constexpr const char *CYAN = "\033[36m";
+constexpr const char* RESET = "\033[0m";
+constexpr const char* BOLD = "\033[1m";
+constexpr const char* RED = "\033[31m";
+constexpr const char* GREEN = "\033[32m";
+constexpr const char* YELLOW = "\033[33m";
+constexpr const char* MAGENTA = "\033[35m";
+constexpr const char* CYAN = "\033[36m";
 }  // namespace ansi
 
 struct CommandResult {
@@ -53,11 +53,11 @@ struct SimpleCheck {
     std::string detail;
 };
 
-std::string colorize(const std::string &text, const char *color) {
+std::string colorize(const std::string& text, const char* color) {
     return std::string(color) + text + ansi::RESET;
 }
 
-std::string trim(const std::string &input) {
+std::string trim(const std::string& input) {
     std::size_t start = 0;
     while (start < input.size() && std::isspace(static_cast<unsigned char>(input[start])) != 0) {
         ++start;
@@ -69,7 +69,7 @@ std::string trim(const std::string &input) {
     return input.substr(start, end - start);
 }
 
-bool startsWith(const std::string &value, const std::string &prefix) {
+bool startsWith(const std::string& value, const std::string& prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
@@ -79,12 +79,12 @@ std::string toLower(std::string value) {
     return value;
 }
 
-bool isDigits(const std::string &value) {
+bool isDigits(const std::string& value) {
     return !value.empty() && std::all_of(value.begin(), value.end(),
                                          [](unsigned char c) { return std::isdigit(c) != 0; });
 }
 
-std::optional<std::string> readFile(const std::string &path) {
+std::optional<std::string> readFile(const std::string& path) {
     std::ifstream input(path);
     if (!input) {
         return std::nullopt;
@@ -94,7 +94,7 @@ std::optional<std::string> readFile(const std::string &path) {
     return ss.str();
 }
 
-std::optional<std::string> readFirstLine(const std::string &path) {
+std::optional<std::string> readFirstLine(const std::string& path) {
     std::ifstream input(path);
     if (!input) {
         return std::nullopt;
@@ -104,13 +104,13 @@ std::optional<std::string> readFirstLine(const std::string &path) {
     return trim(line);
 }
 
-std::optional<long long> parseLongLongPrefix(const std::string &value) {
+std::optional<long long> parseLongLongPrefix(const std::string& value) {
     if (value.empty()) {
         return std::nullopt;
     }
 
     errno = 0;
-    char *end = nullptr;
+    char* end = nullptr;
     const long long parsed = std::strtoll(value.c_str(), &end, 10);
     if (end == value.c_str() || errno == ERANGE) {
         return std::nullopt;
@@ -118,7 +118,7 @@ std::optional<long long> parseLongLongPrefix(const std::string &value) {
     return parsed;
 }
 
-std::optional<int> parseIntPrefix(const std::string &value) {
+std::optional<int> parseIntPrefix(const std::string& value) {
     const auto parsed = parseLongLongPrefix(value);
     if (!parsed) {
         return std::nullopt;
@@ -130,13 +130,13 @@ std::optional<int> parseIntPrefix(const std::string &value) {
     return static_cast<int>(*parsed);
 }
 
-std::optional<double> parseDoubleStrict(const std::string &value) {
+std::optional<double> parseDoubleStrict(const std::string& value) {
     if (value.empty()) {
         return std::nullopt;
     }
 
     errno = 0;
-    char *end = nullptr;
+    char* end = nullptr;
     const double parsed = std::strtod(value.c_str(), &end);
     if (end == value.c_str() || errno == ERANGE) {
         return std::nullopt;
@@ -147,7 +147,7 @@ std::optional<double> parseDoubleStrict(const std::string &value) {
     return parsed;
 }
 
-std::optional<long long> readLongFromFile(const std::string &path) {
+std::optional<long long> readLongFromFile(const std::string& path) {
     const auto line = readFirstLine(path);
     if (!line || line->empty()) {
         return std::nullopt;
@@ -155,7 +155,7 @@ std::optional<long long> readLongFromFile(const std::string &path) {
     return parseLongLongPrefix(*line);
 }
 
-std::vector<std::string> splitLines(const std::string &text) {
+std::vector<std::string> splitLines(const std::string& text) {
     std::vector<std::string> lines;
     std::istringstream ss(text);
     std::string line;
@@ -165,12 +165,12 @@ std::vector<std::string> splitLines(const std::string &text) {
     return lines;
 }
 
-bool commandExists(const std::string &cmd) {
+bool commandExists(const std::string& cmd) {
     if (cmd.find('/') != std::string::npos) {
         return ::access(cmd.c_str(), X_OK) == 0;
     }
 
-    const char *path_env = std::getenv("PATH");
+    const char* path_env = std::getenv("PATH");
     if (path_env == nullptr) {
         return false;
     }
@@ -189,9 +189,9 @@ bool commandExists(const std::string &cmd) {
     return false;
 }
 
-CommandResult runCommand(const std::string &cmd) {
+CommandResult runCommand(const std::string& cmd) {
     CommandResult result;
-    FILE *pipe = ::popen(cmd.c_str(), "r");
+    FILE* pipe = ::popen(cmd.c_str(), "r");
     if (pipe == nullptr) {
         return result;
     }
@@ -213,7 +213,7 @@ CommandResult runCommand(const std::string &cmd) {
     return result;
 }
 
-std::vector<fs::path> listDirectory(const fs::path &path) {
+std::vector<fs::path> listDirectory(const fs::path& path) {
     std::vector<fs::path> entries;
 
     std::error_code ec;
@@ -235,7 +235,7 @@ std::vector<fs::path> listDirectory(const fs::path &path) {
 }
 
 std::string formatBytes(long double bytes) {
-    static const std::array<const char *, 5> units = {"B", "KiB", "MiB", "GiB", "TiB"};
+    static const std::array<const char*, 5> units = {"B", "KiB", "MiB", "GiB", "TiB"};
     std::size_t unit_index = 0;
     while (bytes >= 1024.0L && unit_index + 1 < units.size()) {
         bytes /= 1024.0L;
@@ -299,25 +299,25 @@ std::string stateLabel(CheckState state) {
     return colorize("UNAVAILABLE", ansi::YELLOW);
 }
 
-void printSectionHeader(const std::string &title) {
+void printSectionHeader(const std::string& title) {
     std::cout << "\n" << ansi::BOLD << ansi::CYAN << title << ansi::RESET << "\n";
 }
 
-void printSubHeader(const std::string &title) {
+void printSubHeader(const std::string& title) {
     std::cout << "  " << ansi::MAGENTA << title << ansi::RESET << "\n";
 }
 
-void printKeyValue(const std::string &key, const std::string &value) {
+void printKeyValue(const std::string& key, const std::string& value) {
     std::cout << "  " << std::left << std::setw(28) << key << ": " << value << "\n";
 }
 
-void printBlockLines(const std::string &text) {
+void printBlockLines(const std::string& text) {
     const auto lines = splitLines(text);
     if (lines.empty()) {
         std::cout << "    " << colorize("N/A", ansi::YELLOW) << "\n";
         return;
     }
-    for (const auto &line : lines) {
+    for (const auto& line : lines) {
         if (!line.empty()) {
             std::cout << "    " << line << "\n";
         }
@@ -340,7 +340,7 @@ struct BatteryInfo {
 std::vector<BatteryInfo> collectBatteries() {
     std::vector<BatteryInfo> batteries;
     const auto entries = listDirectory("/sys/class/power_supply");
-    for (const auto &entry : entries) {
+    for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
         if (!startsWith(name, "BAT")) {
             continue;
@@ -372,7 +372,7 @@ std::vector<BatteryInfo> collectBatteries() {
 std::vector<std::pair<std::string, std::optional<long long>>> collectAcAdapters() {
     std::vector<std::pair<std::string, std::optional<long long>>> adapters;
     const auto entries = listDirectory("/sys/class/power_supply");
-    for (const auto &entry : entries) {
+    for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
         const std::string type = readFirstLine((entry / "type").string()).value_or("");
         if (!startsWith(name, "AC") && type != "Mains") {
@@ -389,7 +389,7 @@ void printBatterySection() {
     if (batteries.empty()) {
         printKeyValue("Battery", colorize("No battery detected", ansi::YELLOW));
     } else {
-        for (const auto &battery : batteries) {
+        for (const auto& battery : batteries) {
             printSubHeader("Battery " + battery.name);
             printKeyValue("Status", battery.status);
             printKeyValue("Capacity", battery.capacity
@@ -415,7 +415,7 @@ void printBatterySection() {
         printKeyValue("AC Adapter", colorize("N/A", ansi::YELLOW));
     } else {
         printSubHeader("AC Adapters");
-        for (const auto &adapter : adapters) {
+        for (const auto& adapter : adapters) {
             const std::string state = adapter.second
                                           ? (*adapter.second == 1 ? colorize("Online", ansi::GREEN)
                                                                   : colorize("Offline", ansi::RED))
@@ -518,7 +518,7 @@ CpuIdentity getCpuIdentity() {
         const auto cmd = runCommand("lscpu 2>/dev/null");
         if (cmd.exit_code == 0) {
             const auto lines = splitLines(cmd.output);
-            for (const auto &line : lines) {
+            for (const auto& line : lines) {
                 if (identity.model == "N/A" && startsWith(line, "Model name:")) {
                     identity.model = trim(line.substr(std::strlen("Model name:")));
                 } else if (identity.cores == 0 && startsWith(line, "CPU(s):")) {
@@ -592,7 +592,7 @@ std::pair<int, long long> countProcessesAndThreads() {
     long long thread_count = 0;
 
     const auto entries = listDirectory("/proc");
-    for (const auto &entry : entries) {
+    for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
         if (!isDigits(name)) {
             continue;
@@ -626,7 +626,7 @@ struct ProcessUsage {
     double mem = 0.0;
 };
 
-std::vector<ProcessUsage> getTopProcesses(const std::string &sort_key, std::size_t top_n) {
+std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, std::size_t top_n) {
     std::vector<ProcessUsage> rows;
     if (!commandExists("ps")) {
         return rows;
@@ -639,7 +639,7 @@ std::vector<ProcessUsage> getTopProcesses(const std::string &sort_key, std::size
     }
 
     const auto lines = splitLines(result.output);
-    for (const auto &line : lines) {
+    for (const auto& line : lines) {
         if (line.empty()) {
             continue;
         }
@@ -656,12 +656,12 @@ std::vector<ProcessUsage> getTopProcesses(const std::string &sort_key, std::size
     return rows;
 }
 
-void printTopProcessTable(const std::vector<ProcessUsage> &rows) {
+void printTopProcessTable(const std::vector<ProcessUsage>& rows) {
     std::cout << "    " << std::right << std::setw(8) << "PID"
               << " " << std::left << std::setw(16) << "COMMAND" << std::right << std::setw(6)
               << "%CPU" << std::setw(6) << "%MEM" << "\n";
 
-    for (const auto &row : rows) {
+    for (const auto& row : rows) {
         std::ostringstream cpu_text;
         cpu_text << std::fixed << std::setprecision(1) << row.cpu;
 
@@ -746,7 +746,7 @@ void printRuntimeSection() {
     }
 }
 
-SimpleCheck checkPing(const std::string &host, int probe_count = 3) {
+SimpleCheck checkPing(const std::string& host, int probe_count = 3) {
     if (!commandExists("ping")) {
         return {CheckState::Unavailable, "ping command not found"};
     }
@@ -759,7 +759,7 @@ SimpleCheck checkPing(const std::string &host, int probe_count = 3) {
     }
 
     const auto lines = splitLines(result.output);
-    for (const auto &line : lines) {
+    for (const auto& line : lines) {
         if (line.find("min/avg/max") != std::string::npos) {
             const auto eq_pos = line.find('=');
             if (eq_pos != std::string::npos) {
@@ -790,7 +790,7 @@ SimpleCheck checkDns() {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    addrinfo *result = nullptr;
+    addrinfo* result = nullptr;
     const int rc = ::getaddrinfo("example.com", "80", &hints, &result);
     if (rc != 0 || result == nullptr) {
         return {CheckState::Fail, rc != 0 ? ::gai_strerror(rc) : "no address returned"};
@@ -877,7 +877,7 @@ void printInternetSection() {
     const std::vector<std::string> ping_hosts = {"1.1.1.1",        "8.8.8.8",    "youtube.com",
                                                  "codeforces.com", "github.com", "quanquanque.dev",
                                                  "atcoder.jp"};
-    for (const auto &host : ping_hosts) {
+    for (const auto& host : ping_hosts) {
         const auto ping = checkPing(host, 3);
         printKeyValue("Ping " + host, stateLabel(ping.state) + " - " + ping.detail);
     }
@@ -981,7 +981,7 @@ struct ThermalInfo {
 std::vector<ThermalInfo> collectThermals() {
     std::vector<ThermalInfo> values;
     const auto entries = listDirectory("/sys/class/thermal");
-    for (const auto &entry : entries) {
+    for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
         if (!startsWith(name, "thermal_zone")) {
             continue;
@@ -1010,7 +1010,7 @@ void printPowerSupplySummary() {
     }
 
     bool printed = false;
-    for (const auto &entry : entries) {
+    for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
         const std::string type = readFirstLine((entry / "type").string()).value_or("N/A");
         const std::string status = readFirstLine((entry / "status").string()).value_or("N/A");
@@ -1045,7 +1045,7 @@ void printNetworkInterfacesFromSysfs() {
         return;
     }
 
-    for (const auto &entry : entries) {
+    for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
         const std::string state = readFirstLine((entry / "operstate").string()).value_or("N/A");
         const std::string mac = readFirstLine((entry / "address").string()).value_or("N/A");
@@ -1098,7 +1098,7 @@ void printImportantHealthSection() {
     if (thermals.empty()) {
         std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
     } else {
-        for (const auto &thermal : thermals) {
+        for (const auto& thermal : thermals) {
             if (thermal.temp_c) {
                 std::ostringstream temp;
                 temp << std::fixed << std::setprecision(1) << *thermal.temp_c << " C";
@@ -1173,11 +1173,11 @@ std::string getHostname() {
 }
 
 std::string getCurrentUser() {
-    const char *env_user = std::getenv("USER");
+    const char* env_user = std::getenv("USER");
     if (env_user != nullptr && std::strlen(env_user) > 0) {
         return env_user;
     }
-    const passwd *pw = ::getpwuid(::getuid());
+    const passwd* pw = ::getpwuid(::getuid());
     if (pw == nullptr || pw->pw_name == nullptr) {
         return "N/A";
     }
@@ -1306,7 +1306,7 @@ PackageInventory collectInstalledPackages() {
         {"apk", "apk", "apk info 2>/dev/null"},
     };
 
-    for (const auto &candidate : commands) {
+    for (const auto& candidate : commands) {
         if (!commandExists(candidate.executable)) {
             continue;
         }
@@ -1317,7 +1317,7 @@ PackageInventory collectInstalledPackages() {
 
         inventory.manager = candidate.manager;
         const auto lines = splitLines(result.output);
-        for (const auto &line : lines) {
+        for (const auto& line : lines) {
             if (!line.empty()) {
                 inventory.packages.push_back(line);
             }

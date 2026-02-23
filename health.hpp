@@ -215,10 +215,10 @@ inline void printImportantHealthSection() {
             if (thermal.temp_c) {
                 std::ostringstream temp;
                 temp << std::fixed << std::setprecision(1) << *thermal.temp_c << " C";
-                std::cout << "    " << thermal.zone << " (" << thermal.type << ") = " << temp.str()
-                          << "\n";
+                std::cout << "      " << thermal.zone << " (" << thermal.type
+                          << ") = " << temp.str() << "\n";
             } else {
-                std::cout << "    " << thermal.zone << " (" << thermal.type
+                std::cout << "      " << thermal.zone << " (" << thermal.type
                           << ") = " << colorize("N/A", ansi::YELLOW) << "\n";
             }
         }

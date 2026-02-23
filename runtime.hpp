@@ -47,6 +47,9 @@ inline std::pair<int, long long> countProcessesAndThreads() {
     return {process_count, thread_count};
 }
 
+#include "cpu.hpp"
+#include "health.hpp"
+
 inline void printRuntimeSection() {
     printSectionHeader("RUNTIME");
 
@@ -56,4 +59,23 @@ inline void printRuntimeSection() {
     const auto [processes, threads] = countProcessesAndThreads();
     printKeyValue("Process Count", std::to_string(processes));
     printKeyValue("Thread Count", std::to_string(threads));
+
+    const auto cpu_usage = sampleCpuUsagePercent();
+    printKeyValue("CPU Usage (500ms sample)",
+                  cpu_usage ? colorByPercent(*cpu_usage) : colorize("N/A", ansi::YELLOW));
+
+    const auto thermals = collectThermals();
+    bool found_temp = false;
+    for (const auto& thermal : thermals) {
+        if (thermal.type.find("x86_pkg_temp") != std::string::npos && thermal.temp_c) {
+            std::ostringstream temp;
+            temp << std::fixed << std::setprecision(1) << *thermal.temp_c << " C";
+            printKeyValue("CPU Temp", temp.str());
+            found_temp = true;
+            break;
+        }
+    }
+    if (!found_temp) {
+        printKeyValue("CPU Temp", colorize("N/A", ansi::YELLOW));
+    }
 }

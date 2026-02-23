@@ -138,6 +138,7 @@ inline void printInternetSection() {
         printKeyValue("Ping " + host, stateLabel(ping.state) + " - " + ping.detail);
     }
 
+    printSubHeader("DNS & HTTP");
     const SimpleCheck dns = checkDns();
     printKeyValue("DNS (example.com)", stateLabel(dns.state) + " - " + dns.detail);
 

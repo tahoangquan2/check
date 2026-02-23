@@ -143,7 +143,7 @@ inline std::optional<double> runMicroBenchmarkOnCore(int core_id) {
 
         auto start = std::chrono::steady_clock::now();
         volatile double dummy = 1.0;
-        for (int i = 0; i < 10000000; ++i) {
+        for (int i = 0; i < 100000000; ++i) {
             dummy *= 1.000001;
         }
         auto end = std::chrono::steady_clock::now();
@@ -176,7 +176,7 @@ inline void printCpuSection() {
     }
 
     if (cpu.cores > 0) {
-        printSubHeader("Per-Core Micro-Benchmark (10M ops)");
+        printSubHeader("Per-Core Micro-Benchmark (100M ops)");
         for (int i = 0; i < cpu.cores; ++i) {
             const auto bench = runMicroBenchmarkOnCore(i);
             std::ostringstream label;

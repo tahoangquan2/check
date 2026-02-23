@@ -342,6 +342,7 @@ inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, st
         return rows;
     }
 
+    const int my_pid = ::getpid();
     const auto lines = splitLines(result.output);
     for (const auto& line : lines) {
         if (line.empty()) {
@@ -350,6 +351,9 @@ inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, st
         std::istringstream parser(line);
         ProcessUsage process;
         if (!(parser >> process.pid >> process.command >> process.cpu >> process.mem)) {
+            continue;
+        }
+        if (process.pid == my_pid || process.command == "check") {
             continue;
         }
         rows.push_back(process);

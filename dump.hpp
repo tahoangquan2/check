@@ -215,7 +215,6 @@ inline void printMachineDumpSection() {
     printKeyValue("Default Interface", iface);
     printKeyValue("Default Route", route);
 
-    printSubHeader("Installed Packages");
     const auto packages = collectInstalledPackages();
     if (packages.manager == "N/A" || packages.packages.empty()) {
         printKeyValue("Package Inventory", colorize("UNAVAILABLE", ansi::YELLOW));

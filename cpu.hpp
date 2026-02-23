@@ -5,6 +5,7 @@
 #include <chrono>
 #include <thread>
 
+#include "health.hpp"
 #include "utils.hpp"
 
 struct CpuTimes {
@@ -165,6 +166,21 @@ inline void printCpuSection() {
     printKeyValue("CPU Usage (500ms sample)",
                   cpu_usage ? colorByPercent(*cpu_usage) : colorize("N/A", ansi::YELLOW));
 
+    const auto thermals = collectThermals();
+    bool found_temp = false;
+    for (const auto& thermal : thermals) {
+        if (thermal.type.find("x86_pkg_temp") != std::string::npos && thermal.temp_c) {
+            std::ostringstream temp;
+            temp << std::fixed << std::setprecision(1) << *thermal.temp_c << " C";
+            printKeyValue("CPU Temp", temp.str());
+            found_temp = true;
+            break;
+        }
+    }
+    if (!found_temp) {
+        printKeyValue("CPU Temp", colorize("N/A", ansi::YELLOW));
+    }
+
     const auto load = readLoadAverage();
     if (load) {
         std::ostringstream out;
@@ -180,7 +196,7 @@ inline void printCpuSection() {
         for (int i = 0; i < cpu.cores; ++i) {
             const auto bench = runMicroBenchmarkOnCore(i);
             std::ostringstream label;
-            label << "Core " << i;
+            label << "  Core " << i;
             if (bench) {
                 std::ostringstream out;
                 out << std::fixed << std::setprecision(2) << *bench << " ms ("

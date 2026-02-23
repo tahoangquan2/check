@@ -68,21 +68,23 @@ inline void printBatterySection() {
     } else {
         for (const auto& battery : batteries) {
             printSubHeader("Battery " + battery.name);
-            printKeyValue("Status", battery.status);
-            printKeyValue("Capacity", battery.capacity
-                                          ? colorByPercent(static_cast<double>(*battery.capacity))
+            printKeyValue("  Status", battery.status);
+            printKeyValue("  Capacity", battery.capacity
+                                            ? colorByPercent(static_cast<double>(*battery.capacity))
+                                            : colorize("N/A", ansi::YELLOW));
+            printKeyValue("  Cycle Count", battery.cycle_count
+                                               ? std::to_string(*battery.cycle_count)
+                                               : colorize("N/A", ansi::YELLOW));
+            printKeyValue("  Health", battery.health_percent
+                                          ? colorByPercent(*battery.health_percent)
                                           : colorize("N/A", ansi::YELLOW));
-            printKeyValue("Cycle Count", battery.cycle_count ? std::to_string(*battery.cycle_count)
-                                                             : colorize("N/A", ansi::YELLOW));
-            printKeyValue("Health", battery.health_percent ? colorByPercent(*battery.health_percent)
-                                                           : colorize("N/A", ansi::YELLOW));
             if (battery.voltage_now) {
                 std::ostringstream voltage;
                 voltage << std::fixed << std::setprecision(2)
                         << (static_cast<double>(*battery.voltage_now) / 1000000.0) << " V";
-                printKeyValue("Voltage", voltage.str());
+                printKeyValue("  Voltage", voltage.str());
             } else {
-                printKeyValue("Voltage", colorize("N/A", ansi::YELLOW));
+                printKeyValue("  Voltage", colorize("N/A", ansi::YELLOW));
             }
         }
     }
@@ -91,13 +93,12 @@ inline void printBatterySection() {
     if (adapters.empty()) {
         printKeyValue("AC Adapter", colorize("N/A", ansi::YELLOW));
     } else {
-        printSubHeader("AC Adapters");
         for (const auto& adapter : adapters) {
             const std::string state = adapter.second
                                           ? (*adapter.second == 1 ? colorize("Online", ansi::GREEN)
                                                                   : colorize("Offline", ansi::RED))
                                           : colorize("N/A", ansi::YELLOW);
-            printKeyValue(adapter.first, state);
+            printKeyValue("  AC Adapter", state);
         }
     }
 }

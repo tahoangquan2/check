@@ -91,30 +91,30 @@ inline void printTailscaleInternetInfo() {
         const std::string state =
             readFirstLine("/sys/class/net/tailscale0/operstate").value_or("N/A");
         const std::string mac = readFirstLine("/sys/class/net/tailscale0/address").value_or("N/A");
-        printKeyValue("tailscale0 Interface", "present (state=" + state + ", mac=" + mac + ")");
+        printKeyValue("  tailscale0 Interface", "present (state=" + state + ", mac=" + mac + ")");
     } else {
-        printKeyValue("tailscale0 Interface", colorize("not found", ansi::YELLOW));
+        printKeyValue("  tailscale0 Interface", colorize("not found", ansi::YELLOW));
     }
 
     if (!commandExists("tailscale")) {
-        printKeyValue("tailscale CLI", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("  tailscale CLI", colorize("UNAVAILABLE", ansi::YELLOW));
         return;
     }
 
-    printKeyValue("tailscale CLI", colorize("available", ansi::GREEN));
+    printKeyValue("  tailscale CLI", colorize("available", ansi::GREEN));
 
     const auto ip4 = runCommand("tailscale ip -4 2>/dev/null");
     if (ip4.exit_code == 0 && !trim(ip4.output).empty()) {
-        printKeyValue("Tailscale IPv4", trim(ip4.output));
+        printKeyValue("  Tailscale IPv4", trim(ip4.output));
     } else {
-        printKeyValue("Tailscale IPv4", colorize("N/A", ansi::YELLOW));
+        printKeyValue("  Tailscale IPv4", colorize("N/A", ansi::YELLOW));
     }
 
     const auto ip6 = runCommand("tailscale ip -6 2>/dev/null");
     if (ip6.exit_code == 0 && !trim(ip6.output).empty()) {
-        printKeyValue("Tailscale IPv6", trim(ip6.output));
+        printKeyValue("  Tailscale IPv6", trim(ip6.output));
     } else {
-        printKeyValue("Tailscale IPv6", colorize("N/A", ansi::YELLOW));
+        printKeyValue("  Tailscale IPv6", colorize("N/A", ansi::YELLOW));
     }
 
     const auto netcheck = runCommand("tailscale netcheck 2>/dev/null | head -n 12");
@@ -135,15 +135,15 @@ inline void printInternetSection() {
                                                  "atcoder.jp"};
     for (const auto& host : ping_hosts) {
         const auto ping = checkPing(host, 3);
-        printKeyValue("Ping " + host, stateLabel(ping.state) + " - " + ping.detail);
+        printKeyValue("  Ping " + host, stateLabel(ping.state) + " - " + ping.detail);
     }
 
     printSubHeader("DNS & HTTP");
     const SimpleCheck dns = checkDns();
-    printKeyValue("DNS (example.com)", stateLabel(dns.state) + " - " + dns.detail);
+    printKeyValue("  DNS", stateLabel(dns.state) + " - " + dns.detail);
 
     const SimpleCheck http = checkHttpLatency();
-    printKeyValue("HTTP (https://example.com)", stateLabel(http.state) + " - " + http.detail);
+    printKeyValue("  HTTP", stateLabel(http.state) + " - " + http.detail);
 
     printTailscaleInternetInfo();
 }

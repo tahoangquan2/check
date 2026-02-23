@@ -4,13 +4,11 @@
 #include "health.hpp"
 #include "internet.hpp"
 #include "ram.hpp"
-#include "runtime.hpp"
 
 int main() {
     printBatterySection();
     printCpuSection();
     printRamSection();
-    printRuntimeSection();
     printInternetSection();
     printImportantHealthSection();
     printMachineDumpSection();

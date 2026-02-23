@@ -185,13 +185,13 @@ inline void printImportantHealthSection() {
         if (run) {
             benchmark_results.push_back(*run);
             std::ostringstream label;
-            label << "Run " << i;
+            label << "  Run " << i;
             std::ostringstream value;
             value << std::fixed << std::setprecision(2) << *run << " MB/s";
             printKeyValue(label.str(), value.str());
         } else {
             std::ostringstream label;
-            label << "Run " << i;
+            label << "  Run " << i;
             printKeyValue(label.str(), colorize("UNAVAILABLE", ansi::YELLOW));
         }
     }
@@ -201,9 +201,9 @@ inline void printImportantHealthSection() {
         const double avg = sum / static_cast<double>(benchmark_results.size());
         std::ostringstream value;
         value << std::fixed << std::setprecision(2) << avg << " MB/s";
-        printKeyValue("Average", value.str());
+        printKeyValue("  Average", value.str());
     } else {
-        printKeyValue("Average", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("  Average", colorize("UNAVAILABLE", ansi::YELLOW));
     }
 
     printSubHeader("Thermal Zones");

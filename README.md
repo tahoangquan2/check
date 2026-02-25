@@ -11,7 +11,7 @@ clang++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-except
 ## Compile with g++ (Windows MinGW)
 
 ```powershell
-g++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-exceptions -fno-rtti -Wall -Wextra -pedantic check.cpp -pthread -o check -lws2_32
+g++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-exceptions -fno-rtti -Wall -Wextra -pedantic check.cpp -pthread -o check -lws2_32 -liphlpapi -lpsapi
 ```
 
 ## Run

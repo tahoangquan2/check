@@ -6,6 +6,7 @@ struct BatteryInfo {
     std::string status = "N/A";
     std::optional<long long> capacity;
     std::optional<long long> cycle_count;
+    std::optional<long long> estimated_runtime_min;
     std::optional<long long> charge_full;
     std::optional<long long> charge_full_design;
     std::optional<long long> energy_full;
@@ -17,6 +18,38 @@ struct BatteryInfo {
 inline std::vector<BatteryInfo> collectBatteries() {
     std::vector<BatteryInfo> batteries;
 #ifdef _WIN32
+    std::optional<long long> design_voltage_mv;
+    std::optional<long long> estimated_runtime_min;
+    const auto cim = runCommand(
+        "powershell -NoProfile -Command "
+        "\"$b=Get-CimInstance Win32_Battery | Select-Object -First 1; "
+        "if($b){"
+        "Write-Output ('DesignVoltage=' + $b.DesignVoltage);"
+        "Write-Output ('EstimatedRunTime=' + $b.EstimatedRunTime);"
+        "Write-Output ('BatteryLifeTime=' + $b.BatteryLifeTime)"
+        "}\" 2>nul");
+    if (cim.exit_code == 0) {
+        for (const auto& line : splitLines(cim.output)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) {
+                continue;
+            }
+            const std::string key = trim(line.substr(0, eq));
+            const std::string value = trim(line.substr(eq + 1));
+            if (key == "DesignVoltage") {
+                const auto parsed = parseLongLongPrefix(value);
+                if (parsed && *parsed > 0) {
+                    design_voltage_mv = *parsed;
+                }
+            } else if (key == "EstimatedRunTime" || key == "BatteryLifeTime") {
+                const auto parsed = parseLongLongPrefix(value);
+                if (parsed && *parsed > 0 && *parsed != 71582788) {
+                    estimated_runtime_min = *parsed;
+                }
+            }
+        }
+    }
+
     SYSTEM_POWER_STATUS status;
     if (GetSystemPowerStatus(&status)) {
         if (status.BatteryFlag != 128 && status.BatteryFlag != 255) {
@@ -32,6 +65,15 @@ inline std::vector<BatteryInfo> collectBatteries() {
             if (status.BatteryLifePercent != 255) {
                 info.capacity = status.BatteryLifePercent;
                 info.health_percent = status.BatteryLifePercent;
+            }
+
+            if (design_voltage_mv) {
+                info.voltage_now = *design_voltage_mv * 1000;
+            }
+            if (estimated_runtime_min) {
+                info.estimated_runtime_min = estimated_runtime_min;
+            } else if (status.BatteryLifeTime != static_cast<DWORD>(-1)) {
+                info.estimated_runtime_min = static_cast<long long>(status.BatteryLifeTime) / 60;
             }
             batteries.push_back(info);
         }
@@ -101,6 +143,22 @@ inline void printBatterySection() {
         for (const auto& battery : batteries) {
             printSubHeader("Battery " + battery.name);
             printKeyValue("  Status", battery.status);
+#ifdef _WIN32
+            printKeyValue("  Capacity",
+                          battery.capacity ? colorByPercent(static_cast<double>(*battery.capacity))
+                                           : colorize("reported by driver only", ansi::YELLOW));
+            if (battery.estimated_runtime_min) {
+                std::ostringstream runtime;
+                runtime << *battery.estimated_runtime_min << " min";
+                printKeyValue("  Estimated Runtime", runtime.str());
+            } else {
+                printKeyValue("  Estimated Runtime",
+                              colorize("not reported (likely on AC)", ansi::YELLOW));
+            }
+            printKeyValue("  Health", battery.health_percent
+                                          ? colorByPercent(*battery.health_percent)
+                                          : colorize("health telemetry not exposed", ansi::YELLOW));
+#else
             printKeyValue("  Capacity", battery.capacity
                                             ? colorByPercent(static_cast<double>(*battery.capacity))
                                             : colorize("N/A", ansi::YELLOW));
@@ -110,26 +168,57 @@ inline void printBatterySection() {
             printKeyValue("  Health", battery.health_percent
                                           ? colorByPercent(*battery.health_percent)
                                           : colorize("N/A", ansi::YELLOW));
+#endif
             if (battery.voltage_now) {
                 std::ostringstream voltage;
                 voltage << std::fixed << std::setprecision(2)
                         << (static_cast<double>(*battery.voltage_now) / 1000000.0) << " V";
-                printKeyValue("  Voltage", voltage.str());
+                printKeyValue(
+#ifdef _WIN32
+                    "  Battery Voltage",
+#else
+                    "  Voltage",
+#endif
+                    voltage.str());
             } else {
-                printKeyValue("  Voltage", colorize("N/A", ansi::YELLOW));
+                printKeyValue(
+#ifdef _WIN32
+                    "  Battery Voltage",
+#else
+                    "  Voltage",
+#endif
+                    colorize(
+#ifdef _WIN32
+                        "not exposed by firmware",
+#else
+                        "N/A",
+#endif
+                        ansi::YELLOW));
             }
         }
     }
 
     const auto adapters = collectAcAdapters();
     if (adapters.empty()) {
-        printKeyValue("AC Adapter", colorize("N/A", ansi::YELLOW));
+        printKeyValue(
+            "AC Adapter",
+#ifdef _WIN32
+            colorize("state not exposed", ansi::YELLOW)
+#else
+            colorize("N/A", ansi::YELLOW)
+#endif
+        );
     } else {
         for (const auto& adapter : adapters) {
             const std::string state = adapter.second
                                           ? (*adapter.second == 1 ? colorize("Online", ansi::GREEN)
                                                                   : colorize("Offline", ansi::RED))
-                                          : colorize("N/A", ansi::YELLOW);
+                                          :
+#ifdef _WIN32
+                                          colorize("state not exposed", ansi::YELLOW);
+#else
+                                          colorize("N/A", ansi::YELLOW);
+#endif
             printKeyValue("  AC Adapter", state);
         }
     }

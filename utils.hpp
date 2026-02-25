@@ -13,12 +13,19 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
 #include <fcntl.h>
 #include <io.h>
+#include <iphlpapi.h>
 #include <process.h>
+#include <psapi.h>
+#include <tlhelp32.h>
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
 
 #endif
 
@@ -38,6 +45,8 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -175,6 +184,167 @@ inline std::vector<std::string> splitLines(const std::string& text) {
     }
     return lines;
 }
+
+#ifdef _WIN32
+inline unsigned long long fileTimeToUint64(const FILETIME& value) {
+    ULARGE_INTEGER u{};
+    u.LowPart = value.dwLowDateTime;
+    u.HighPart = value.dwHighDateTime;
+    return u.QuadPart;
+}
+
+inline std::string wideToUtf8(const std::wstring& value) {
+    if (value.empty()) {
+        return {};
+    }
+
+    const int required = WideCharToMultiByte(
+        CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (required <= 0) {
+        return {};
+    }
+
+    std::string out(static_cast<std::size_t>(required), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), &out[0],
+                            required, nullptr, nullptr) <= 0) {
+        return {};
+    }
+    return out;
+}
+
+struct ProcessSnapshotRow {
+    DWORD pid = 0;
+    std::string command;
+    unsigned long long cpu_time_100ns = 0;
+    SIZE_T working_set = 0;
+};
+
+inline std::vector<ProcessSnapshotRow> captureProcessSnapshot() {
+    std::vector<ProcessSnapshotRow> rows;
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return rows;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    const DWORD self_pid = GetCurrentProcessId();
+
+    if (!Process32FirstW(snap, &entry)) {
+        CloseHandle(snap);
+        return rows;
+    }
+
+    do {
+        if (entry.th32ProcessID == 0 || entry.th32ProcessID == self_pid) {
+            continue;
+        }
+
+        ProcessSnapshotRow row;
+        row.pid = entry.th32ProcessID;
+        row.command = wideToUtf8(entry.szExeFile);
+
+        HANDLE process =
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, row.pid);
+        if (process != nullptr) {
+            FILETIME create_time{}, exit_time{}, kernel_time{}, user_time{};
+            if (GetProcessTimes(process, &create_time, &exit_time, &kernel_time, &user_time)) {
+                row.cpu_time_100ns = fileTimeToUint64(kernel_time) + fileTimeToUint64(user_time);
+            }
+
+            PROCESS_MEMORY_COUNTERS counters{};
+            if (GetProcessMemoryInfo(process, &counters, sizeof(counters))) {
+                row.working_set = counters.WorkingSetSize;
+            }
+
+            WCHAR image_name[MAX_PATH] = {0};
+            DWORD image_len = MAX_PATH;
+            if (QueryFullProcessImageNameW(process, 0, image_name, &image_len) && image_len > 0) {
+                std::wstring full_path(image_name, image_len);
+                const auto slash = full_path.find_last_of(L"\\/");
+                if (slash != std::wstring::npos && slash + 1 < full_path.size()) {
+                    full_path = full_path.substr(slash + 1);
+                }
+                const std::string parsed = wideToUtf8(full_path);
+                if (!parsed.empty()) {
+                    row.command = parsed;
+                }
+            }
+            CloseHandle(process);
+        }
+
+        if (row.command.empty()) {
+            row.command = "pid_" + std::to_string(row.pid);
+        }
+        rows.push_back(row);
+    } while (Process32NextW(snap, &entry));
+
+    CloseHandle(snap);
+    return rows;
+}
+
+inline void appendTcpSocketCounts(int family, std::unordered_map<DWORD, int>& counts) {
+    ULONG size = 0;
+    DWORD rc = GetExtendedTcpTable(nullptr, &size, FALSE, family, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (rc != ERROR_INSUFFICIENT_BUFFER) {
+        return;
+    }
+
+    std::vector<unsigned char> buffer(size);
+    rc = GetExtendedTcpTable(buffer.data(), &size, FALSE, family, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (rc != NO_ERROR) {
+        return;
+    }
+
+    if (family == AF_INET) {
+        const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
+        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+            counts[table->table[i].dwOwningPid] += 1;
+        }
+    } else if (family == AF_INET6) {
+        const auto* table = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buffer.data());
+        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+            counts[table->table[i].dwOwningPid] += 1;
+        }
+    }
+}
+
+inline void appendUdpSocketCounts(int family, std::unordered_map<DWORD, int>& counts) {
+    ULONG size = 0;
+    DWORD rc = GetExtendedUdpTable(nullptr, &size, FALSE, family, UDP_TABLE_OWNER_PID, 0);
+    if (rc != ERROR_INSUFFICIENT_BUFFER) {
+        return;
+    }
+
+    std::vector<unsigned char> buffer(size);
+    rc = GetExtendedUdpTable(buffer.data(), &size, FALSE, family, UDP_TABLE_OWNER_PID, 0);
+    if (rc != NO_ERROR) {
+        return;
+    }
+
+    if (family == AF_INET) {
+        const auto* table = reinterpret_cast<const MIB_UDPTABLE_OWNER_PID*>(buffer.data());
+        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+            counts[table->table[i].dwOwningPid] += 1;
+        }
+    } else if (family == AF_INET6) {
+        const auto* table = reinterpret_cast<const MIB_UDP6TABLE_OWNER_PID*>(buffer.data());
+        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+            counts[table->table[i].dwOwningPid] += 1;
+        }
+    }
+}
+
+inline std::unordered_map<DWORD, int> buildSocketCountByPid() {
+    std::unordered_map<DWORD, int> counts;
+    appendTcpSocketCounts(AF_INET, counts);
+    appendTcpSocketCounts(AF_INET6, counts);
+    appendUdpSocketCounts(AF_INET, counts);
+    appendUdpSocketCounts(AF_INET6, counts);
+    return counts;
+}
+#endif
 
 inline bool commandExists(const std::string& cmd) {
 #ifdef _WIN32
@@ -404,9 +574,85 @@ inline int countNetworkSockets(int pid) {
 inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, std::size_t top_n) {
     std::vector<ProcessUsage> rows;
 #ifdef _WIN32
-    (void)sort_key;
-    (void)top_n;
-    // Process parsing depends heavily on Linux tools, unavail on Windows out of the box
+    const auto first_snapshot = captureProcessSnapshot();
+    if (first_snapshot.empty()) {
+        return rows;
+    }
+
+    const auto sample_start = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const auto second_snapshot = captureProcessSnapshot();
+    const auto sample_end = std::chrono::steady_clock::now();
+
+    if (second_snapshot.empty()) {
+        return rows;
+    }
+
+    std::unordered_map<DWORD, ProcessSnapshotRow> before;
+    before.reserve(first_snapshot.size());
+    for (const auto& row : first_snapshot) {
+        before[row.pid] = row;
+    }
+
+    MEMORYSTATUSEX mem_status{};
+    mem_status.dwLength = sizeof(mem_status);
+    const bool has_mem = GlobalMemoryStatusEx(&mem_status) != 0;
+    const double total_mem = has_mem ? static_cast<double>(mem_status.ullTotalPhys) : 0.0;
+    const double wall_100ns =
+        std::chrono::duration<double>(sample_end - sample_start).count() * 10000000.0;
+
+    const auto socket_counts = buildSocketCountByPid();
+
+    for (const auto& now : second_snapshot) {
+        ProcessUsage row;
+        row.pid = static_cast<int>(now.pid);
+        row.command = now.command;
+
+        const auto it = before.find(now.pid);
+        if (it != before.end() && wall_100ns > 0.0 &&
+            now.cpu_time_100ns >= it->second.cpu_time_100ns) {
+            const double delta =
+                static_cast<double>(now.cpu_time_100ns - it->second.cpu_time_100ns);
+            row.cpu = (delta / wall_100ns) * 100.0;
+        }
+
+        if (total_mem > 0.0) {
+            row.mem = (static_cast<double>(now.working_set) / total_mem) * 100.0;
+        }
+
+        const auto socket_it = socket_counts.find(now.pid);
+        if (socket_it != socket_counts.end()) {
+            row.net_sockets = socket_it->second;
+        }
+
+        const std::string lowered = toLower(row.command);
+        if (lowered == "check" || lowered == "check.exe") {
+            continue;
+        }
+        rows.push_back(row);
+    }
+
+    if (sort_key == "%cpu") {
+        std::sort(rows.begin(), rows.end(),
+                  [](const ProcessUsage& a, const ProcessUsage& b) { return a.cpu > b.cpu; });
+    } else if (sort_key == "%mem") {
+        std::sort(rows.begin(), rows.end(),
+                  [](const ProcessUsage& a, const ProcessUsage& b) { return a.mem > b.mem; });
+    } else if (sort_key == "net") {
+        std::sort(rows.begin(), rows.end(), [](const ProcessUsage& a, const ProcessUsage& b) {
+            if (a.net_sockets == b.net_sockets) {
+                return a.cpu > b.cpu;
+            }
+            return a.net_sockets > b.net_sockets;
+        });
+    } else {
+        std::sort(rows.begin(), rows.end(),
+                  [](const ProcessUsage& a, const ProcessUsage& b) { return a.cpu > b.cpu; });
+    }
+
+    if (rows.size() > top_n) {
+        rows.resize(top_n);
+    }
     return rows;
 #else
     if (!commandExists("ps")) {

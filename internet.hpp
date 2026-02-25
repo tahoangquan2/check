@@ -2,6 +2,83 @@
 
 #include "utils.hpp"
 
+inline std::optional<std::string> extractJsonField(const std::string& json,
+                                                   const std::string& key) {
+    const std::string needle = "\"" + key + "\"";
+    const auto key_pos = json.find(needle);
+    if (key_pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto colon = json.find(':', key_pos + needle.size());
+    if (colon == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto first_quote = json.find('"', colon + 1);
+    if (first_quote == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto second_quote = json.find('"', first_quote + 1);
+    if (second_quote == std::string::npos || second_quote <= first_quote + 1) {
+        return std::nullopt;
+    }
+    return json.substr(first_quote + 1, second_quote - first_quote - 1);
+}
+
+inline void printBlockLinesLimited(const std::string& text, std::size_t limit) {
+    std::size_t printed = 0;
+    for (const auto& line : splitLines(text)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::cout << "    " << line << "\n";
+        ++printed;
+        if (printed >= limit) {
+            break;
+        }
+    }
+    if (printed == 0) {
+        std::cout << "    " << colorize("No details returned", ansi::YELLOW) << "\n";
+    }
+}
+
+#ifdef _WIN32
+inline std::string getWindowsTailscaleInterfaceSummary() {
+    ULONG size = 0;
+    DWORD rc = GetAdaptersInfo(nullptr, &size);
+    if (rc != ERROR_BUFFER_OVERFLOW) {
+        return colorize("adapter lookup failed", ansi::YELLOW);
+    }
+
+    std::vector<unsigned char> buffer(size);
+    auto* addresses = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
+    rc = GetAdaptersInfo(addresses, &size);
+    if (rc != NO_ERROR) {
+        return colorize("adapter lookup failed", ansi::YELLOW);
+    }
+
+    for (auto* adapter = addresses; adapter != nullptr; adapter = adapter->Next) {
+        std::string desc = adapter->Description;
+        std::string lowered = toLower(desc + " " + adapter->AdapterName);
+        if (lowered.find("tailscale") == std::string::npos) {
+            continue;
+        }
+
+        std::ostringstream mac;
+        for (ULONG i = 0; i < adapter->AddressLength; ++i) {
+            if (i > 0) {
+                mac << ":";
+            }
+            mac << std::hex << std::setw(2) << std::setfill('0')
+                << static_cast<int>(adapter->Address[i]) << std::dec;
+        }
+        std::string mac_text = mac.str().empty() ? "virtual adapter" : mac.str();
+        return "present (name=" + (desc.empty() ? adapter->AdapterName : desc) +
+               ", mac=" + mac_text + ")";
+    }
+    return colorize("not found", ansi::YELLOW);
+}
+#endif
+
 inline SimpleCheck checkPing(const std::string& host, int probe_count = 2) {
     if (!commandExists("ping")) {
         return {CheckState::Unavailable, "ping command not found"};
@@ -126,8 +203,7 @@ inline void printTailscaleInternetInfo() {
     printSubHeader("Tailscale");
 
 #ifdef _WIN32
-    printKeyValue("  tailscale0 Interface",
-                  colorize("Windows sysfs check unavailable", ansi::YELLOW));
+    printKeyValue("  Tailscale Adapter", getWindowsTailscaleInterfaceSummary());
 #else
     if (fs::exists("/sys/class/net/tailscale0")) {
         const std::string state =
@@ -140,32 +216,56 @@ inline void printTailscaleInternetInfo() {
 #endif
 
     if (!commandExists("tailscale")) {
-        printKeyValue("  tailscale CLI", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("  Tailscale CLI", colorize("not installed", ansi::YELLOW));
         return;
     }
 
-    printKeyValue("  tailscale CLI", colorize("available", ansi::GREEN));
+    printKeyValue("  Tailscale CLI", colorize("available", ansi::GREEN));
 
+#ifdef _WIN32
+    const auto ip4 = runCommand("tailscale ip -4 2>nul");
+#else
     const auto ip4 = runCommand("tailscale ip -4 2>/dev/null");
+#endif
     if (ip4.exit_code == 0 && !trim(ip4.output).empty()) {
         printKeyValue("  Tailscale IPv4", trim(ip4.output));
     } else {
-        printKeyValue("  Tailscale IPv4", colorize("N/A", ansi::YELLOW));
+        std::string detail = "Not assigned";
+#ifdef _WIN32
+        const auto status = runCommand("tailscale status --json 2>nul");
+#else
+        const auto status = runCommand("tailscale status --json 2>/dev/null");
+#endif
+        if (status.exit_code == 0) {
+            const auto state = extractJsonField(status.output, "BackendState");
+            if (state) {
+                detail += " (state=" + *state + ")";
+            }
+        }
+        printKeyValue("  Tailscale IPv4", colorize(detail, ansi::YELLOW));
     }
 
+#ifdef _WIN32
+    const auto ip6 = runCommand("tailscale ip -6 2>nul");
+#else
     const auto ip6 = runCommand("tailscale ip -6 2>/dev/null");
+#endif
     if (ip6.exit_code == 0 && !trim(ip6.output).empty()) {
         printKeyValue("  Tailscale IPv6", trim(ip6.output));
     } else {
-        printKeyValue("  Tailscale IPv6", colorize("N/A", ansi::YELLOW));
+        printKeyValue("  Tailscale IPv6", colorize("Not assigned", ansi::YELLOW));
     }
 
-    const auto netcheck = runCommand("tailscale netcheck 2>/dev/null | head -n 12");
-    if (netcheck.exit_code == 0 && !trim(netcheck.output).empty()) {
+#ifdef _WIN32
+    const auto netcheck = runCommand("tailscale netcheck 2>nul");
+#else
+    const auto netcheck = runCommand("tailscale netcheck 2>/dev/null");
+#endif
+    if (!trim(netcheck.output).empty()) {
         printSubHeader("Tailscale Netcheck");
-        printBlockLines(netcheck.output);
+        printBlockLinesLimited(netcheck.output, 12);
     } else {
-        printKeyValue("Tailscale Netcheck", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("Tailscale Netcheck", colorize("No netcheck output", ansi::YELLOW));
     }
 }
 
@@ -191,7 +291,8 @@ inline void printInternetSection(const std::vector<ProcessUsage>& top_net) {
     printTailscaleInternetInfo();
 
     if (top_net.empty()) {
-        printKeyValue("Top Network Processes", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("Top Network Processes",
+                      colorize("process telemetry not exposed", ansi::YELLOW));
     } else {
         printSubHeader("Top 10 Processes (by Network Sockets)");
         printTopProcessTable(top_net);

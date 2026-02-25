@@ -105,11 +105,18 @@ inline CpuIdentity getCpuIdentity() {
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     identity.cores = sysinfo.dwNumberOfProcessors;
-    const auto cmd = runCommand("wmic cpu get name 2>nul");
-    if (cmd.exit_code == 0) {
-        const auto lines = splitLines(cmd.output);
-        if (lines.size() >= 2) {
-            identity.model = lines[1];
+    const auto cmd = runCommand(
+        "powershell -NoProfile -Command "
+        "\"$cpu=Get-CimInstance Win32_Processor | Select-Object -First 1; if($cpu){$cpu.Name}\" "
+        "2>nul");
+    if (cmd.exit_code == 0 && !trim(cmd.output).empty()) {
+        identity.model = trim(cmd.output);
+    } else {
+        const char* env_cpu = std::getenv("PROCESSOR_IDENTIFIER");
+        if (env_cpu != nullptr && std::strlen(env_cpu) > 0) {
+            identity.model = env_cpu;
+        } else {
+            identity.model = "Windows processor information not exposed";
         }
     }
 #else
@@ -167,6 +174,31 @@ inline std::optional<std::array<double, 3>> readLoadAverage() {
 #endif
 }
 
+inline std::optional<double> readProcessorQueueLength() {
+#ifdef _WIN32
+    const auto result = runCommand(
+        "powershell -NoProfile -Command "
+        "\"(Get-Counter '\\\\System\\\\Processor Queue Length').CounterSamples.CookedValue\" "
+        "2>nul");
+    if (result.exit_code != 0) {
+        return std::nullopt;
+    }
+    const auto lines = splitLines(result.output);
+    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+        if (it->empty()) {
+            continue;
+        }
+        const auto value = parseDoubleStrict(*it);
+        if (value) {
+            return *value;
+        }
+    }
+    return std::nullopt;
+#else
+    return std::nullopt;
+#endif
+}
+
 inline std::optional<double> runBenchmarkOnCore(int core_id) {
     std::optional<double> result;
     std::thread t([&result, core_id]() {
@@ -199,16 +231,34 @@ inline void printCpuSection(const std::vector<ProcessUsage>& top_cpu) {
 
     const CpuIdentity cpu = getCpuIdentity();
     printKeyValue("CPU Model", cpu.model);
-    printKeyValue("CPU Cores",
-                  cpu.cores > 0 ? std::to_string(cpu.cores) : colorize("N/A", ansi::YELLOW));
+    printKeyValue("CPU Cores", cpu.cores > 0 ? std::to_string(cpu.cores)
+                                             : colorize("core count not exposed", ansi::YELLOW));
 
     const auto cpu_usage = sampleCpuUsagePercent();
-    printKeyValue("CPU Usage (500ms sample)",
-                  cpu_usage ? colorByPercent(*cpu_usage) : colorize("N/A", ansi::YELLOW));
+    if (cpu_usage) {
+        printKeyValue("CPU Usage (500ms sample)", colorByPercent(*cpu_usage));
+    } else {
+        printKeyValue("CPU Usage (500ms sample)", colorize("sampling failed", ansi::YELLOW));
+    }
 
     const auto thermals = collectThermals();
     bool found_temp = false;
     for (const auto& thermal : thermals) {
+#ifdef _WIN32
+        const std::string label = toLower(thermal.type + " " + thermal.zone);
+        if (thermal.temp_c &&
+            (label.find("cpu") != std::string::npos || label.find("pkg") != std::string::npos ||
+             label.find("core") != std::string::npos || !found_temp)) {
+            std::ostringstream temp;
+            temp << std::fixed << std::setprecision(1) << *thermal.temp_c << " C";
+            printKeyValue("CPU Temp", temp.str());
+            found_temp = true;
+            if (label.find("cpu") != std::string::npos || label.find("pkg") != std::string::npos ||
+                label.find("core") != std::string::npos) {
+                break;
+            }
+        }
+#else
         if (thermal.type.find("x86_pkg_temp") != std::string::npos && thermal.temp_c) {
             std::ostringstream temp;
             temp << std::fixed << std::setprecision(1) << *thermal.temp_c << " C";
@@ -216,11 +266,22 @@ inline void printCpuSection(const std::vector<ProcessUsage>& top_cpu) {
             found_temp = true;
             break;
         }
+#endif
     }
     if (!found_temp) {
-        printKeyValue("CPU Temp", colorize("N/A", ansi::YELLOW));
+        printKeyValue("CPU Temp", colorize("not exposed by firmware", ansi::YELLOW));
     }
 
+#ifdef _WIN32
+    const auto queue = readProcessorQueueLength();
+    if (queue) {
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(2) << *queue;
+        printKeyValue("Processor Queue Length", out.str());
+    } else {
+        printKeyValue("Processor Queue Length", colorize("counter not exposed", ansi::YELLOW));
+    }
+#else
     const auto load = readLoadAverage();
     if (load) {
         std::ostringstream out;
@@ -230,6 +291,7 @@ inline void printCpuSection(const std::vector<ProcessUsage>& top_cpu) {
     } else {
         printKeyValue("Load Average (1/5/15m)", colorize("N/A", ansi::YELLOW));
     }
+#endif
 
     if (cpu.cores > 0) {
         printSubHeader("Per-Core Benchmark (100M ops)");
@@ -249,7 +311,7 @@ inline void printCpuSection(const std::vector<ProcessUsage>& top_cpu) {
     }
 
     if (top_cpu.empty()) {
-        printKeyValue("Top CPU Processes", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("Top CPU Processes", colorize("process telemetry not exposed", ansi::YELLOW));
     } else {
         printSubHeader("Top 10 Processes (by CPU)");
         printTopProcessTable(top_cpu);

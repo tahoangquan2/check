@@ -86,16 +86,42 @@ inline void printRamSection(const std::vector<ProcessUsage>& top_ram) {
     const long long swap_free = mem.count("SwapFree") > 0 ? mem.at("SwapFree") : -1;
     const long long swap_used = (swap_total >= 0 && swap_free >= 0) ? (swap_total - swap_free) : -1;
 
-    printKeyValue("RAM Total",
-                  mem_total >= 0 ? formatKilobytes(mem_total) : colorize("N/A", ansi::YELLOW));
-    printKeyValue("RAM Used",
-                  mem_used >= 0 ? formatKilobytes(mem_used) : colorize("N/A", ansi::YELLOW));
-    printKeyValue("RAM Available", mem_available >= 0 ? formatKilobytes(mem_available)
-                                                      : colorize("N/A", ansi::YELLOW));
-    printKeyValue("Swap Total",
-                  swap_total >= 0 ? formatKilobytes(swap_total) : colorize("N/A", ansi::YELLOW));
-    printKeyValue("Swap Used",
-                  swap_used >= 0 ? formatKilobytes(swap_used) : colorize("N/A", ansi::YELLOW));
+    printKeyValue("RAM Total", mem_total >= 0 ? formatKilobytes(mem_total) :
+#ifdef _WIN32
+                                              colorize("memory total not exposed", ansi::YELLOW)
+#else
+                                              colorize("N/A", ansi::YELLOW)
+#endif
+    );
+    printKeyValue("RAM Used", mem_used >= 0 ? formatKilobytes(mem_used) :
+#ifdef _WIN32
+                                            colorize("memory usage not exposed", ansi::YELLOW)
+#else
+                                            colorize("N/A", ansi::YELLOW)
+#endif
+    );
+    printKeyValue("RAM Available",
+                  mem_available >= 0 ? formatKilobytes(mem_available) :
+#ifdef _WIN32
+                                     colorize("memory availability not exposed", ansi::YELLOW)
+#else
+                                     colorize("N/A", ansi::YELLOW)
+#endif
+    );
+    printKeyValue("Swap Total", swap_total >= 0 ? formatKilobytes(swap_total) :
+#ifdef _WIN32
+                                                colorize("swap total not exposed", ansi::YELLOW)
+#else
+                                                colorize("N/A", ansi::YELLOW)
+#endif
+    );
+    printKeyValue("Swap Used", swap_used >= 0 ? formatKilobytes(swap_used) :
+#ifdef _WIN32
+                                              colorize("swap usage not exposed", ansi::YELLOW)
+#else
+                                              colorize("N/A", ansi::YELLOW)
+#endif
+    );
 
     const auto bench = runMemoryBenchmark();
     if (bench) {
@@ -107,7 +133,12 @@ inline void printRamSection(const std::vector<ProcessUsage>& top_ram) {
     }
 
     if (top_ram.empty()) {
-        printKeyValue("Top RAM Processes", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("Top RAM Processes",
+#ifdef _WIN32
+                      colorize("process telemetry not exposed", ansi::YELLOW));
+#else
+                      colorize("UNAVAILABLE", ansi::YELLOW));
+#endif
     } else {
         printSubHeader("Top 10 Processes (by RAM)");
         printTopProcessTable(top_ram);

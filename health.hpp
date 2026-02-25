@@ -204,7 +204,39 @@ struct ThermalInfo {
 inline std::vector<ThermalInfo> collectThermals() {
     std::vector<ThermalInfo> values;
 #ifdef _WIN32
-    return values;  // Unsupported natively
+    const auto result = runCommand(
+        "powershell -NoProfile -Command "
+        "\"$rows=Get-CimInstance Win32_PerfFormattedData_Counters_ThermalZoneInformation "
+        "-ErrorAction SilentlyContinue; "
+        "if($rows){$rows | ForEach-Object { Write-Output ($_.Name + '|' + $_.Temperature) }}\" "
+        "2>nul");
+    if (result.exit_code != 0) {
+        return values;
+    }
+
+    for (const auto& line : splitLines(result.output)) {
+        const auto sep = line.find('|');
+        if (sep == std::string::npos) {
+            continue;
+        }
+        ThermalInfo info;
+        info.zone = trim(line.substr(0, sep));
+        info.type = "ACPI Thermal Zone";
+
+        const std::string raw = trim(line.substr(sep + 1));
+        const auto parsed = parseDoubleStrict(raw);
+        if (parsed) {
+            double celsius = *parsed;
+            if (celsius > 200.0) {
+                celsius -= 273.15;
+            }
+            if (celsius > -80.0 && celsius < 200.0) {
+                info.temp_c = celsius;
+            }
+        }
+        values.push_back(info);
+    }
+    return values;
 #else
     std::error_code ec;
     auto thermal_it = fs::directory_iterator("/sys/class/thermal", ec);
@@ -266,7 +298,13 @@ inline void printImportantHealthSection() {
         printKeyValue("Root Disk Used", formatBytes(static_cast<long double>(disk.used)));
         printKeyValue("Root Disk Free", formatBytes(static_cast<long double>(disk.free)));
     } else {
-        printKeyValue("Root Disk Usage", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("Root Disk Usage",
+#ifdef _WIN32
+                      colorize("disk usage could not be queried", ansi::YELLOW)
+#else
+                      colorize("UNAVAILABLE", ansi::YELLOW)
+#endif
+        );
     }
 
     printSubHeader("Disk Write Benchmark (256MB)");
@@ -283,7 +321,13 @@ inline void printImportantHealthSection() {
         } else {
             std::ostringstream label;
             label << "  Run " << i;
-            printKeyValue(label.str(), colorize("UNAVAILABLE", ansi::YELLOW));
+            printKeyValue(label.str(),
+#ifdef _WIN32
+                          colorize("write benchmark failed", ansi::YELLOW)
+#else
+                          colorize("UNAVAILABLE", ansi::YELLOW)
+#endif
+            );
         }
     }
 
@@ -294,7 +338,13 @@ inline void printImportantHealthSection() {
         value << std::fixed << std::setprecision(2) << avg << " MB/s";
         printKeyValue("  Write Average", value.str());
     } else {
-        printKeyValue("  Write Average", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("  Write Average",
+#ifdef _WIN32
+                      colorize("write benchmark failed", ansi::YELLOW)
+#else
+                      colorize("UNAVAILABLE", ansi::YELLOW)
+#endif
+        );
     }
 
     printSubHeader("Disk Read Benchmark (256MB)");
@@ -328,7 +378,13 @@ inline void printImportantHealthSection() {
         } else {
             std::ostringstream label;
             label << "  Run " << i;
-            printKeyValue(label.str(), colorize("UNAVAILABLE", ansi::YELLOW));
+            printKeyValue(label.str(),
+#ifdef _WIN32
+                          colorize("read benchmark failed", ansi::YELLOW)
+#else
+                          colorize("UNAVAILABLE", ansi::YELLOW)
+#endif
+            );
         }
     }
 
@@ -339,13 +395,25 @@ inline void printImportantHealthSection() {
         value << std::fixed << std::setprecision(2) << avg << " MB/s";
         printKeyValue("  Read Average", value.str());
     } else {
-        printKeyValue("  Read Average", colorize("UNAVAILABLE", ansi::YELLOW));
+        printKeyValue("  Read Average",
+#ifdef _WIN32
+                      colorize("read benchmark failed", ansi::YELLOW)
+#else
+                      colorize("UNAVAILABLE", ansi::YELLOW)
+#endif
+        );
     }
 
     printSubHeader("Thermal Zones");
     const auto thermals = collectThermals();
     if (thermals.empty()) {
-        std::cout << "  " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
+        std::cout << "  "
+#ifdef _WIN32
+                  << colorize("No ACPI thermal sensors exposed", ansi::YELLOW)
+#else
+                  << colorize("UNAVAILABLE", ansi::YELLOW)
+#endif
+                  << "\n";
     } else {
         for (const auto& thermal : thermals) {
             if (thermal.temp_c) {
@@ -354,8 +422,13 @@ inline void printImportantHealthSection() {
                 std::cout << "    " << thermal.zone << " (" << thermal.type << ") = " << temp.str()
                           << "\n";
             } else {
-                std::cout << "    " << thermal.zone << " (" << thermal.type
-                          << ") = " << colorize("N/A", ansi::YELLOW) << "\n";
+                std::cout << "    " << thermal.zone << " (" << thermal.type << ") = "
+#ifdef _WIN32
+                          << colorize("temperature not reported", ansi::YELLOW)
+#else
+                          << colorize("N/A", ansi::YELLOW)
+#endif
+                          << "\n";
             }
         }
     }

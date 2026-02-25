@@ -154,7 +154,7 @@ inline std::optional<double> runMicroBenchmarkOnCore(int core_id) {
     return result;
 }
 
-inline void printCpuSection() {
+inline void printCpuSection(const std::vector<ProcessUsage>& top_cpu) {
     printSectionHeader("CPU");
 
     const CpuIdentity cpu = getCpuIdentity();
@@ -208,7 +208,6 @@ inline void printCpuSection() {
         }
     }
 
-    const auto top_cpu = getTopProcesses("%cpu", 10);
     if (top_cpu.empty()) {
         printKeyValue("Top CPU Processes", colorize("UNAVAILABLE", ansi::YELLOW));
     } else {

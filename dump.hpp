@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "utils.hpp"
 
 inline std::optional<double> readUptimeSeconds() {
@@ -236,6 +238,58 @@ inline PackageInventory collectInstalledPackages() {
     return inventory;
 }
 
+inline void printPowerSupplySummary() {
+    printSubHeader("Power Supply Devices");
+    const auto entries = listDirectory("/sys/class/power_supply");
+    if (entries.empty()) {
+        std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
+        return;
+    }
+
+    bool printed = false;
+    for (const auto& entry : entries) {
+        const std::string name = entry.filename().string();
+        const std::string type = readFirstLine((entry / "type").string()).value_or("N/A");
+        const std::string status = readFirstLine((entry / "status").string()).value_or("N/A");
+        const auto online = readLongFromFile((entry / "online").string());
+        const auto capacity = readLongFromFile((entry / "capacity").string());
+
+        std::ostringstream line;
+        line << name << " (" << type << ")";
+        if (status != "N/A") {
+            line << " status=" << status;
+        }
+        if (online) {
+            line << " online=" << *online;
+        }
+        if (capacity) {
+            line << " capacity=" << *capacity << "%";
+        }
+        std::cout << "    " << line.str() << "\n";
+        printed = true;
+    }
+
+    if (!printed) {
+        std::cout << "    " << colorize("N/A", ansi::YELLOW) << "\n";
+    }
+}
+
+inline void printNetworkInterfacesFromSysfs() {
+    printSubHeader("Network Interfaces");
+    const auto entries = listDirectory("/sys/class/net");
+    if (entries.empty()) {
+        std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
+        return;
+    }
+
+    for (const auto& entry : entries) {
+        const std::string name = entry.filename().string();
+        const std::string state = readFirstLine((entry / "operstate").string()).value_or("N/A");
+        const std::string mac = readFirstLine((entry / "address").string()).value_or("N/A");
+        std::cout << "    " << name << " state=" << state << " mac=" << mac << "\n";
+    }
+}
+
 inline void printMachineDumpSection() {
     printSectionHeader("INFO DUMP");
 
@@ -275,4 +329,33 @@ inline void printMachineDumpSection() {
         printKeyValue("Package Manager", packages.manager);
         printKeyValue("Package Count", std::to_string(packages.packages.size()));
     }
+
+    printSubHeader("USB Devices");
+    if (commandExists("lsusb")) {
+        const auto usb = runCommand("lsusb 2>/dev/null");
+        if (usb.exit_code == 0 && !trim(usb.output).empty()) {
+            printBlockLines(usb.output);
+        } else {
+            std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
+        }
+    } else {
+        std::cout << "    " << colorize("UNAVAILABLE: lsusb command not found", ansi::YELLOW)
+                  << "\n";
+    }
+
+    printSubHeader("Storage Devices");
+    if (commandExists("lsblk")) {
+        const auto blk = runCommand("lsblk -o NAME,TYPE,SIZE,MODEL,TRAN,MOUNTPOINT 2>/dev/null");
+        if (blk.exit_code == 0 && !trim(blk.output).empty()) {
+            printBlockLines(blk.output);
+        } else {
+            std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
+        }
+    } else {
+        std::cout << "    " << colorize("UNAVAILABLE: lsblk command not found", ansi::YELLOW)
+                  << "\n";
+    }
+
+    printPowerSupplySummary();
+    printNetworkInterfacesFromSysfs();
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <map>
 
 #include "utils.hpp"
@@ -29,7 +30,34 @@ inline std::map<std::string, long long> readMemInfo() {
     return info;
 }
 
-inline void printRamSection() {
+inline std::optional<double> runMemoryMicroBenchmark() {
+    constexpr std::size_t size_bytes = 256ULL * 1024ULL * 1024ULL;
+    char* buf = static_cast<char*>(std::malloc(size_bytes));
+    if (!buf) {
+        return std::nullopt;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    std::memset(buf, 0xAA, size_bytes);
+
+    volatile char dummy = 0;
+    for (std::size_t i = 0; i < size_bytes; i += 4096) {
+        dummy ^= buf[i];
+    }
+
+    const auto end = std::chrono::steady_clock::now();
+    std::free(buf);
+
+    const double seconds = std::chrono::duration<double>(end - start).count();
+    if (seconds <= 0.0) {
+        return std::nullopt;
+    }
+
+    const double mbps = static_cast<double>(size_bytes) / (1024.0 * 1024.0) / seconds;
+    return mbps;
+}
+
+inline void printRamSection(const std::vector<ProcessUsage>& top_ram) {
     printSectionHeader("RAM");
 
     const auto mem = readMemInfo();
@@ -57,7 +85,15 @@ inline void printRamSection() {
     printKeyValue("Swap Used",
                   swap_used >= 0 ? formatKilobytes(swap_used) : colorize("N/A", ansi::YELLOW));
 
-    const auto top_ram = getTopProcesses("%mem", 10);
+    const auto bench = runMemoryMicroBenchmark();
+    if (bench) {
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(2) << *bench << " MB/s";
+        printKeyValue("RAM R/W Benchmark (256MB)", out.str());
+    } else {
+        printKeyValue("RAM R/W Benchmark (256MB)", colorize("FAIL", ansi::RED));
+    }
+
     if (top_ram.empty()) {
         printKeyValue("Top RAM Processes", colorize("UNAVAILABLE", ansi::YELLOW));
     } else {

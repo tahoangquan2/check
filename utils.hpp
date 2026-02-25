@@ -322,13 +322,29 @@ inline void printBlockLines(const std::string& text) {
     }
 }
 
-// Struct and helper functions for processes that might be needed by both runtime and other modules
 struct ProcessUsage {
     int pid = -1;
     std::string command;
     double cpu = 0.0;
     double mem = 0.0;
+    int net_sockets = 0;
 };
+
+inline int countNetworkSockets(int pid) {
+    int count = 0;
+    std::string fd_dir = "/proc/" + std::to_string(pid) + "/fd";
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(fd_dir, ec)) {
+        std::error_code sym_ec;
+        if (fs::is_symlink(entry, sym_ec)) {
+            auto target = fs::read_symlink(entry, sym_ec);
+            if (!sym_ec && target.string().find("socket:[") == 0) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
 
 inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, std::size_t top_n) {
     std::vector<ProcessUsage> rows;
@@ -336,7 +352,13 @@ inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, st
         return rows;
     }
 
-    std::string cmd = "ps -eo pid=,comm=,%cpu=,%mem= --sort=-" + sort_key + " 2>/dev/null";
+    std::string cmd;
+    if (sort_key == "net") {
+        cmd = "ps -eo pid=,comm=,%cpu=,%mem= 2>/dev/null";
+    } else {
+        cmd = "ps -eo pid=,comm=,%cpu=,%mem= --sort=-" + sort_key + " 2>/dev/null";
+    }
+
     const auto result = runCommand(cmd);
     if (result.exit_code != 0) {
         return rows;
@@ -356,18 +378,31 @@ inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, st
         if (process.pid == my_pid || process.command == "check") {
             continue;
         }
+
+        process.net_sockets = countNetworkSockets(process.pid);
         rows.push_back(process);
-        if (rows.size() >= top_n) {
+
+        if (sort_key != "net" && rows.size() >= top_n) {
             break;
         }
     }
+
+    if (sort_key == "net") {
+        std::sort(rows.begin(), rows.end(), [](const ProcessUsage& a, const ProcessUsage& b) {
+            return a.net_sockets > b.net_sockets;
+        });
+        if (rows.size() > top_n) {
+            rows.resize(top_n);
+        }
+    }
+
     return rows;
 }
 
 inline void printTopProcessTable(const std::vector<ProcessUsage>& rows) {
     std::cout << "    " << std::right << std::setw(8) << "PID"
               << " " << std::left << std::setw(16) << "COMMAND" << std::right << std::setw(6)
-              << "%CPU" << std::setw(6) << "%MEM" << "\n";
+              << "%CPU" << std::setw(6) << "%MEM" << std::setw(6) << "NET" << "\n";
 
     for (const auto& row : rows) {
         std::ostringstream cpu_text;
@@ -378,7 +413,7 @@ inline void printTopProcessTable(const std::vector<ProcessUsage>& rows) {
 
         std::cout << "    " << std::right << std::setw(8) << row.pid << " " << std::left
                   << std::setw(16) << row.command << std::right << std::setw(6) << cpu_text.str()
-                  << std::setw(6) << mem_text.str() << "\n";
+                  << std::setw(6) << mem_text.str() << std::setw(6) << row.net_sockets << "\n";
     }
     std::cout << std::left;
 }

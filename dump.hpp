@@ -238,42 +238,6 @@ inline PackageInventory collectInstalledPackages() {
     return inventory;
 }
 
-inline void printPowerSupplySummary() {
-    printSubHeader("Power Supply Devices");
-    const auto entries = listDirectory("/sys/class/power_supply");
-    if (entries.empty()) {
-        std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
-        return;
-    }
-
-    bool printed = false;
-    for (const auto& entry : entries) {
-        const std::string name = entry.filename().string();
-        const std::string type = readFirstLine((entry / "type").string()).value_or("N/A");
-        const std::string status = readFirstLine((entry / "status").string()).value_or("N/A");
-        const auto online = readLongFromFile((entry / "online").string());
-        const auto capacity = readLongFromFile((entry / "capacity").string());
-
-        std::ostringstream line;
-        line << name << " (" << type << ")";
-        if (status != "N/A") {
-            line << " status=" << status;
-        }
-        if (online) {
-            line << " online=" << *online;
-        }
-        if (capacity) {
-            line << " capacity=" << *capacity << "%";
-        }
-        std::cout << "    " << line.str() << "\n";
-        printed = true;
-    }
-
-    if (!printed) {
-        std::cout << "    " << colorize("N/A", ansi::YELLOW) << "\n";
-    }
-}
-
 inline void printNetworkInterfacesFromSysfs() {
     printSubHeader("Network Interfaces");
     const auto entries = listDirectory("/sys/class/net");
@@ -356,6 +320,5 @@ inline void printMachineDumpSection() {
                   << "\n";
     }
 
-    printPowerSupplySummary();
     printNetworkInterfacesFromSysfs();
 }

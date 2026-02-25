@@ -126,7 +126,7 @@ inline void printTailscaleInternetInfo() {
     }
 }
 
-inline void printInternetSection() {
+inline void printInternetSection(const std::vector<ProcessUsage>& top_net) {
     printSectionHeader("INTERNET");
 
     printSubHeader("Ping Stress Check (3 probes each)");
@@ -146,4 +146,11 @@ inline void printInternetSection() {
     printKeyValue("  HTTP", stateLabel(http.state) + " - " + http.detail);
 
     printTailscaleInternetInfo();
+
+    if (top_net.empty()) {
+        printKeyValue("Top Network Processes", colorize("UNAVAILABLE", ansi::YELLOW));
+    } else {
+        printSubHeader("Top 10 Processes (by Network Sockets)");
+        printTopProcessTable(top_net);
+    }
 }

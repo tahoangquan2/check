@@ -2,7 +2,7 @@
 
 #include "utils.hpp"
 
-inline SimpleCheck checkPing(const std::string& host, int probe_count = 3) {
+inline SimpleCheck checkPing(const std::string& host, int probe_count = 2) {
     if (!commandExists("ping")) {
         return {CheckState::Unavailable, "ping command not found"};
     }
@@ -129,7 +129,7 @@ inline void printTailscaleInternetInfo() {
 inline void printInternetSection(const std::vector<ProcessUsage>& top_net) {
     printSectionHeader("INTERNET");
 
-    printSubHeader("Ping Stress Check (3 probes each)");
+    printSubHeader("Ping Stress Check (2 probes each)");
     const std::vector<std::string> ping_hosts = {"1.1.1.1",        "8.8.8.8",    "youtube.com",
                                                  "codeforces.com", "github.com", "hquan.dev",
                                                  "atcoder.jp"};

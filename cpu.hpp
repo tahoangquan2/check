@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef _WIN32
 #include <pthread.h>
+#endif
 
 #include <chrono>
 #include <thread>
@@ -16,6 +18,22 @@ struct CpuTimes {
 
 inline CpuTimes readCpuTimes() {
     CpuTimes times;
+#ifdef _WIN32
+    FILETIME idle, kernel, user;
+    if (GetSystemTimes(&idle, &kernel, &user)) {
+        ULARGE_INTEGER i, k, u;
+        i.LowPart = idle.dwLowDateTime;
+        i.HighPart = idle.dwHighDateTime;
+        k.LowPart = kernel.dwLowDateTime;
+        k.HighPart = kernel.dwHighDateTime;
+        u.LowPart = user.dwLowDateTime;
+        u.HighPart = user.dwHighDateTime;
+
+        times.idle_all = i.QuadPart;
+        times.total = k.QuadPart + u.QuadPart;
+        times.valid = true;
+    }
+#else
     std::ifstream input("/proc/stat");
     if (!input) {
         return times;
@@ -50,6 +68,7 @@ inline CpuTimes readCpuTimes() {
     times.idle_all = idle + iowait;
     times.total = user + nice + system + idle + iowait + irq + softirq + steal + guest + guest_nice;
     times.valid = true;
+#endif
     return times;
 }
 
@@ -82,6 +101,18 @@ struct CpuIdentity {
 
 inline CpuIdentity getCpuIdentity() {
     CpuIdentity identity;
+#ifdef _WIN32
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    identity.cores = sysinfo.dwNumberOfProcessors;
+    const auto cmd = runCommand("wmic cpu get name 2>nul");
+    if (cmd.exit_code == 0) {
+        const auto lines = splitLines(cmd.output);
+        if (lines.size() >= 2) {
+            identity.model = lines[1];
+        }
+    }
+#else
     std::ifstream input("/proc/cpuinfo");
     if (input) {
         std::string line;
@@ -114,11 +145,14 @@ inline CpuIdentity getCpuIdentity() {
             }
         }
     }
-
+#endif
     return identity;
 }
 
 inline std::optional<std::array<double, 3>> readLoadAverage() {
+#ifdef _WIN32
+    return std::nullopt;
+#else
     std::ifstream input("/proc/loadavg");
     if (!input) {
         return std::nullopt;
@@ -130,17 +164,23 @@ inline std::optional<std::array<double, 3>> readLoadAverage() {
         return std::nullopt;
     }
     return values;
+#endif
 }
 
 inline std::optional<double> runBenchmarkOnCore(int core_id) {
     std::optional<double> result;
     std::thread t([&result, core_id]() {
+#ifdef _WIN32
+        DWORD_PTR mask = (DWORD_PTR)1 << core_id;
+        SetThreadAffinityMask(GetCurrentThread(), mask);
+#else
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
         CPU_SET(core_id, &cpuset);
         if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
             return;
         }
+#endif
 
         auto start = std::chrono::steady_clock::now();
         volatile double dummy = 1.0;

@@ -13,6 +13,16 @@ struct DiskUsage {
 
 inline DiskUsage getRootDiskUsage() {
     DiskUsage usage;
+#ifdef _WIN32
+    ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
+    if (GetDiskFreeSpaceExA("C:\\", &freeBytesAvailable, &totalNumberOfBytes,
+                            &totalNumberOfFreeBytes)) {
+        usage.valid = true;
+        usage.total = totalNumberOfBytes.QuadPart;
+        usage.free = totalNumberOfFreeBytes.QuadPart;
+        usage.used = usage.total > usage.free ? usage.total - usage.free : 0;
+    }
+#else
     struct statvfs stats{};
     if (::statvfs("/", &stats) != 0) {
         return usage;
@@ -27,14 +37,20 @@ inline DiskUsage getRootDiskUsage() {
     usage.total = total;
     usage.used = used;
     usage.free = free;
+#endif
     return usage;
 }
 
 inline std::optional<double> runSingleWriteBenchmark(std::size_t size_mb, int run_id,
                                                      bool keep_file = false) {
     const std::string file_path =
+#ifdef _WIN32
+        "check_bench_" + std::to_string(getpid()) + "_" + std::to_string(run_id) + ".dat";
+    const int fd = _open(file_path.c_str(), _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY, 0600);
+#else
         "/tmp/check_bench_" + std::to_string(::getpid()) + "_" + std::to_string(run_id) + ".dat";
     const int fd = ::open(file_path.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+#endif
     if (fd < 0) {
         return std::nullopt;
     }
@@ -51,7 +67,11 @@ inline std::optional<double> runSingleWriteBenchmark(std::size_t size_mb, int ru
     while (written < total_bytes) {
         const std::size_t to_write = static_cast<std::size_t>(
             std::min<unsigned long long>(chunk_size, total_bytes - written));
+#ifdef _WIN32
+        const ssize_t rc = _write(fd, buffer.data(), static_cast<unsigned int>(to_write));
+#else
         const ssize_t rc = ::write(fd, buffer.data(), to_write);
+#endif
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -66,13 +86,24 @@ inline std::optional<double> runSingleWriteBenchmark(std::size_t size_mb, int ru
         written += static_cast<unsigned long long>(rc);
     }
 
-    if (ok && ::fsync(fd) != 0) {
-        ok = false;
+    if (ok) {
+#ifdef _WIN32
+        if (_commit(fd) != 0) ok = false;
+#else
+        if (::fsync(fd) != 0) ok = false;
+#endif
     }
+#ifdef _WIN32
+    _close(fd);
+    if (!keep_file) {
+        _unlink(file_path.c_str());
+    }
+#else
     ::close(fd);
     if (!keep_file) {
         ::unlink(file_path.c_str());
     }
+#endif
 
     if (!ok) {
         return std::nullopt;
@@ -90,16 +121,23 @@ inline std::optional<double> runSingleWriteBenchmark(std::size_t size_mb, int ru
 
 inline std::optional<double> runSingleReadBenchmark(std::size_t size_mb, int run_id) {
     const std::string file_path =
+#ifdef _WIN32
+        "check_bench_" + std::to_string(getpid()) + "_" + std::to_string(run_id) + ".dat";
+    const int fd = _open(file_path.c_str(), _O_RDONLY | _O_BINARY);
+#else
         "/tmp/check_bench_" + std::to_string(::getpid()) + "_" + std::to_string(run_id) + ".dat";
     const int fd = ::open(file_path.c_str(), O_RDONLY);
+#endif
     if (fd < 0) {
         return std::nullopt;
     }
 
     // drop page cache for accurate read testing if running as root
+#ifndef _WIN32
     if (::geteuid() == 0) {
         runCommand("sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null");
     }
+#endif
 
     constexpr std::size_t chunk_size = 1024 * 1024;
     std::vector<char> buffer(chunk_size);
@@ -113,7 +151,11 @@ inline std::optional<double> runSingleReadBenchmark(std::size_t size_mb, int run
     while (read_bytes < total_bytes) {
         const std::size_t to_read = static_cast<std::size_t>(
             std::min<unsigned long long>(chunk_size, total_bytes - read_bytes));
+#ifdef _WIN32
+        const ssize_t rc = _read(fd, buffer.data(), static_cast<unsigned int>(to_read));
+#else
         const ssize_t rc = ::read(fd, buffer.data(), to_read);
+#endif
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -131,8 +173,13 @@ inline std::optional<double> runSingleReadBenchmark(std::size_t size_mb, int run
         for (ssize_t i = 0; i < rc; i += 4096) dummy ^= buffer[i];
     }
 
+#ifdef _WIN32
+    _close(fd);
+    _unlink(file_path.c_str());
+#else
     ::close(fd);
     ::unlink(file_path.c_str());
+#endif
 
     if (!ok || read_bytes == 0) {
         return std::nullopt;
@@ -156,7 +203,9 @@ struct ThermalInfo {
 
 inline std::vector<ThermalInfo> collectThermals() {
     std::vector<ThermalInfo> values;
-
+#ifdef _WIN32
+    return values;  // Unsupported natively
+#else
     std::error_code ec;
     auto thermal_it = fs::directory_iterator("/sys/class/thermal", ec);
     if (!ec) {
@@ -205,6 +254,7 @@ inline std::vector<ThermalInfo> collectThermals() {
     }
 
     return values;
+#endif
 }
 
 inline void printImportantHealthSection() {
@@ -248,6 +298,14 @@ inline void printImportantHealthSection() {
     }
 
     printSubHeader("Disk Read Benchmark (256MB)");
+#ifdef _WIN32
+    std::cout << "  "
+              << colorize(
+                     "Warning: Cannot drop caches easily on Windows, read benchmark results may be "
+                     "artificially high.",
+                     ansi::YELLOW)
+              << "\n";
+#else
     if (::geteuid() != 0) {
         std::cout << "  "
                   << colorize(
@@ -256,6 +314,7 @@ inline void printImportantHealthSection() {
                          ansi::YELLOW)
                   << "\n";
     }
+#endif
     std::vector<double> read_results;
     for (int i = 1; i <= 3; ++i) {
         const auto run = runSingleReadBenchmark(256, i);

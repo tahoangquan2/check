@@ -8,6 +8,23 @@ inline SimpleCheck checkPing(const std::string& host, int probe_count = 2) {
     }
 
     const int probes = std::max(1, probe_count);
+#ifdef _WIN32
+    const std::string cmd = "ping -n " + std::to_string(probes) + " -w 2000 " + host + " 2>nul";
+    const auto result = runCommand(cmd);
+    if (result.exit_code != 0) {
+        return {CheckState::Fail, "host unreachable"};
+    }
+
+    const auto lines = splitLines(result.output);
+    for (const auto& line : lines) {
+        if (line.find("Average =") != std::string::npos) {
+            std::string avg = line.substr(line.find("Average =") + 9);
+            return {CheckState::Pass, trim(avg) + " avg"};
+        }
+    }
+
+    return {CheckState::Pass, "reachable"};
+#else
     const std::string cmd = "ping -c " + std::to_string(probes) + " -W 2 " + host + " 2>/dev/null";
     const auto result = runCommand(cmd);
     if (result.exit_code != 0) {
@@ -39,9 +56,16 @@ inline SimpleCheck checkPing(const std::string& host, int probe_count = 2) {
     }
 
     return {CheckState::Pass, "reachable"};
+#endif
 }
 
 inline SimpleCheck checkDns() {
+#ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        return {CheckState::Fail, "WSAStartup failed"};
+    }
+#endif
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -49,7 +73,13 @@ inline SimpleCheck checkDns() {
     addrinfo* result = nullptr;
     const int rc = ::getaddrinfo("example.com", "80", &hints, &result);
     if (rc != 0 || result == nullptr) {
+#ifdef _WIN32
+        const std::string err = rc != 0 ? ::gai_strerrorA(rc) : "no address returned";
+        WSACleanup();
+        return {CheckState::Fail, err};
+#else
         return {CheckState::Fail, rc != 0 ? ::gai_strerror(rc) : "no address returned"};
+#endif
     }
 
     char host[NI_MAXHOST] = {0};
@@ -60,6 +90,9 @@ inline SimpleCheck checkDns() {
     }
 
     ::freeaddrinfo(result);
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return {CheckState::Pass, detail};
 }
 
@@ -68,8 +101,13 @@ inline SimpleCheck checkHttpLatency() {
         return {CheckState::Unavailable, "curl command not found"};
     }
 
+#ifdef _WIN32
+    const auto result =
+        runCommand("curl -s -o NUL -w \"%{time_total}\" --max-time 5 https://example.com 2>nul");
+#else
     const auto result = runCommand(
         "curl -s -o /dev/null -w \"%{time_total}\" --max-time 5 https://example.com 2>/dev/null");
+#endif
     if (result.exit_code != 0) {
         return {CheckState::Fail, "HTTP request failed"};
     }
@@ -87,6 +125,10 @@ inline SimpleCheck checkHttpLatency() {
 inline void printTailscaleInternetInfo() {
     printSubHeader("Tailscale");
 
+#ifdef _WIN32
+    printKeyValue("  tailscale0 Interface",
+                  colorize("Windows sysfs check unavailable", ansi::YELLOW));
+#else
     if (fs::exists("/sys/class/net/tailscale0")) {
         const std::string state =
             readFirstLine("/sys/class/net/tailscale0/operstate").value_or("N/A");
@@ -95,6 +137,7 @@ inline void printTailscaleInternetInfo() {
     } else {
         printKeyValue("  tailscale0 Interface", colorize("not found", ansi::YELLOW));
     }
+#endif
 
     if (!commandExists("tailscale")) {
         printKeyValue("  tailscale CLI", colorize("UNAVAILABLE", ansi::YELLOW));

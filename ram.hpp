@@ -7,6 +7,17 @@
 
 inline std::map<std::string, long long> readMemInfo() {
     std::map<std::string, long long> info;
+#ifdef _WIN32
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+    if (GlobalMemoryStatusEx(&memInfo)) {
+        info["MemTotal"] = memInfo.ullTotalPhys / 1024;
+        info["MemFree"] = memInfo.ullAvailPhys / 1024;
+        info["MemAvailable"] = memInfo.ullAvailPhys / 1024;
+        info["SwapTotal"] = memInfo.ullTotalPageFile / 1024;
+        info["SwapFree"] = memInfo.ullAvailPageFile / 1024;
+    }
+#else
     std::ifstream input("/proc/meminfo");
     if (!input) {
         return info;
@@ -27,6 +38,7 @@ inline std::map<std::string, long long> readMemInfo() {
             info[key] = value;
         }
     }
+#endif
     return info;
 }
 

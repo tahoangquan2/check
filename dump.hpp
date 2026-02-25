@@ -5,6 +5,9 @@
 #include "utils.hpp"
 
 inline std::optional<double> readUptimeSeconds() {
+#ifdef _WIN32
+    return GetTickCount64() / 1000.0;
+#else
     std::ifstream input("/proc/uptime");
     if (!input) {
         return std::nullopt;
@@ -15,12 +18,15 @@ inline std::optional<double> readUptimeSeconds() {
         return std::nullopt;
     }
     return seconds;
+#endif
 }
 
 inline std::pair<int, long long> countProcessesAndThreads() {
     int process_count = 0;
     long long thread_count = 0;
-
+#ifdef _WIN32
+    // Windows requires Psapi/Toolhelp32 mapping which is complex. Stub for now.
+#else
     const auto entries = listDirectory("/proc");
     for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
@@ -45,11 +51,15 @@ inline std::pair<int, long long> countProcessesAndThreads() {
             }
         }
     }
+#endif
 
     return {process_count, thread_count};
 }
 
 inline std::string getOsPrettyName() {
+#ifdef _WIN32
+    return "Windows";
+#else
     std::ifstream input("/etc/os-release");
     if (!input) {
         return "N/A";
@@ -69,18 +79,34 @@ inline std::string getOsPrettyName() {
         return value;
     }
     return "N/A";
+#endif
 }
 
 inline std::string getHostname() {
     char host[256] = {0};
-    if (::gethostname(host, sizeof(host)) != 0) {
-        return "N/A";
+#ifdef _WIN32
+    DWORD size = sizeof(host);
+    if (GetComputerNameA(host, &size)) {
+        return host;
     }
-    host[sizeof(host) - 1] = '\0';
-    return host;
+#else
+    if (::gethostname(host, sizeof(host)) == 0) {
+        host[sizeof(host) - 1] = '\0';
+        return host;
+    }
+#endif
+    return "N/A";
 }
 
 inline std::string getCurrentUser() {
+#ifdef _WIN32
+    char user[256] = {0};
+    DWORD size = sizeof(user);
+    if (GetUserNameA(user, &size)) {
+        return user;
+    }
+    return "N/A";
+#else
     const char* env_user = std::getenv("USER");
     if (env_user != nullptr && std::strlen(env_user) > 0) {
         return env_user;
@@ -90,9 +116,13 @@ inline std::string getCurrentUser() {
         return "N/A";
     }
     return pw->pw_name;
+#endif
 }
 
 inline std::string getUserCount() {
+#ifdef _WIN32
+    return "1";
+#else
     std::ifstream passwd_file("/etc/passwd");
     if (!passwd_file) {
         return colorize("N/A", ansi::YELLOW);
@@ -106,14 +136,23 @@ inline std::string getUserCount() {
         }
     }
     return std::to_string(count);
+#endif
 }
 
 inline std::string getLocalTimestamp() {
     const std::time_t now = std::time(nullptr);
     std::tm local_tm{};
+#ifdef _WIN32
+    std::tm* tm_ptr = std::localtime(&now);
+    if (tm_ptr == nullptr) {
+        return "N/A";
+    }
+    local_tm = *tm_ptr;
+#else
     if (::localtime_r(&now, &local_tm) == nullptr) {
         return "N/A";
     }
+#endif
     char buffer[128] = {0};
     if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S %Z", &local_tm) == 0) {
         return "N/A";
@@ -122,6 +161,9 @@ inline std::string getLocalTimestamp() {
 }
 
 inline std::string detectVirtualization() {
+#ifdef _WIN32
+    return "N/A (Windows check unimplemented)";
+#else
     if (commandExists("systemd-detect-virt")) {
         const auto result = runCommand("systemd-detect-virt 2>/dev/null");
         const std::string value = trim(result.output);
@@ -165,9 +207,13 @@ inline std::string detectVirtualization() {
     }
 
     return "dedicated/none detected";
+#endif
 }
 
 inline std::pair<std::string, std::string> getDefaultRouteAndInterface() {
+#ifdef _WIN32
+    return {"N/A", "N/A"};
+#else
     if (!commandExists("ip")) {
         return {"UNAVAILABLE", "UNAVAILABLE"};
     }
@@ -191,6 +237,7 @@ inline std::pair<std::string, std::string> getDefaultRouteAndInterface() {
         iface = route.substr(start, end - start);
     }
     return {route, iface};
+#endif
 }
 
 struct PackageInventory {
@@ -200,7 +247,10 @@ struct PackageInventory {
 
 inline PackageInventory collectInstalledPackages() {
     PackageInventory inventory;
-
+#ifdef _WIN32
+    inventory.manager = "UNAVAILABLE";
+    return inventory;
+#else
     struct PackageCommand {
         std::string manager;
         std::string executable;
@@ -236,10 +286,14 @@ inline PackageInventory collectInstalledPackages() {
     }
 
     return inventory;
+#endif
 }
 
 inline void printNetworkInterfacesFromSysfs() {
     printSubHeader("Network Interfaces");
+#ifdef _WIN32
+    std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
+#else
     const auto entries = listDirectory("/sys/class/net");
     if (entries.empty()) {
         std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
@@ -252,6 +306,7 @@ inline void printNetworkInterfacesFromSysfs() {
         const std::string mac = readFirstLine((entry / "address").string()).value_or("N/A");
         std::cout << "    " << name << " state=" << state << " mac=" << mac << "\n";
     }
+#endif
 }
 
 inline void printMachineDumpSection() {
@@ -259,6 +314,10 @@ inline void printMachineDumpSection() {
 
     printKeyValue("OS", getOsPrettyName());
 
+#ifdef _WIN32
+    printKeyValue("Kernel", colorize("N/A", ansi::YELLOW));
+    printKeyValue("Architecture", colorize("N/A", ansi::YELLOW));
+#else
     struct utsname uname_data{};
     if (::uname(&uname_data) == 0) {
         printKeyValue("Kernel", uname_data.release);
@@ -267,6 +326,7 @@ inline void printMachineDumpSection() {
         printKeyValue("Kernel", colorize("N/A", ansi::YELLOW));
         printKeyValue("Architecture", colorize("N/A", ansi::YELLOW));
     }
+#endif
 
     printKeyValue("Hostname", getHostname());
     printKeyValue("Current User", getCurrentUser());

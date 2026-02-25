@@ -16,6 +16,27 @@ struct BatteryInfo {
 
 inline std::vector<BatteryInfo> collectBatteries() {
     std::vector<BatteryInfo> batteries;
+#ifdef _WIN32
+    SYSTEM_POWER_STATUS status;
+    if (GetSystemPowerStatus(&status)) {
+        if (status.BatteryFlag != 128 && status.BatteryFlag != 255) {
+            BatteryInfo info;
+            info.name = "Internal";
+            if (status.BatteryFlag & 8)
+                info.status = "Charging";
+            else if (status.ACLineStatus == 1)
+                info.status = "Not charging";
+            else
+                info.status = "Discharging";
+
+            if (status.BatteryLifePercent != 255) {
+                info.capacity = status.BatteryLifePercent;
+                info.health_percent = status.BatteryLifePercent;
+            }
+            batteries.push_back(info);
+        }
+    }
+#else
     const auto entries = listDirectory("/sys/class/power_supply");
     for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
@@ -43,11 +64,21 @@ inline std::vector<BatteryInfo> collectBatteries() {
         }
         batteries.push_back(info);
     }
+#endif
     return batteries;
 }
 
 inline std::vector<std::pair<std::string, std::optional<long long>>> collectAcAdapters() {
     std::vector<std::pair<std::string, std::optional<long long>>> adapters;
+#ifdef _WIN32
+    SYSTEM_POWER_STATUS status;
+    if (GetSystemPowerStatus(&status)) {
+        if (status.ACLineStatus == 0)
+            adapters.push_back({"AC", 0});
+        else if (status.ACLineStatus == 1)
+            adapters.push_back({"AC", 1});
+    }
+#else
     const auto entries = listDirectory("/sys/class/power_supply");
     for (const auto& entry : entries) {
         const std::string name = entry.filename().string();
@@ -57,6 +88,7 @@ inline std::vector<std::pair<std::string, std::optional<long long>>> collectAcAd
         }
         adapters.push_back({name, readLongFromFile((entry / "online").string())});
     }
+#endif
     return adapters;
 }
 

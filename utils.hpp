@@ -1,5 +1,6 @@
 #pragma once
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <netdb.h>
 #include <pwd.h>
@@ -8,6 +9,18 @@
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#endif
 
 #include <algorithm>
 #include <array>
@@ -164,6 +177,33 @@ inline std::vector<std::string> splitLines(const std::string& text) {
 }
 
 inline bool commandExists(const std::string& cmd) {
+#ifdef _WIN32
+    if (cmd.find('/') != std::string::npos || cmd.find('\\') != std::string::npos) {
+        return _access(cmd.c_str(), 0) == 0;
+    }
+
+    const char* path_env = std::getenv("PATH");
+    if (path_env == nullptr) {
+        return false;
+    }
+
+    std::stringstream ss(path_env);
+    std::string dir;
+    const std::string ext = ".exe";
+    while (std::getline(ss, dir, ';')) {
+        if (dir.empty()) {
+            dir = ".";
+        }
+        std::string full = dir + "\\" + cmd;
+        if (full.length() < 4 || toLower(full.substr(full.length() - 4)) != ext) {
+            full += ext;
+        }
+        if (_access(full.c_str(), 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+#else
     if (cmd.find('/') != std::string::npos) {
         return ::access(cmd.c_str(), X_OK) == 0;
     }
@@ -185,11 +225,16 @@ inline bool commandExists(const std::string& cmd) {
         }
     }
     return false;
+#endif
 }
 
 inline CommandResult runCommand(const std::string& cmd) {
     CommandResult result;
+#ifdef _WIN32
+    FILE* pipe = _popen(cmd.c_str(), "r");
+#else
     FILE* pipe = ::popen(cmd.c_str(), "r");
+#endif
     if (pipe == nullptr) {
         return result;
     }
@@ -199,6 +244,10 @@ inline CommandResult runCommand(const std::string& cmd) {
         result.output += buffer;
     }
 
+#ifdef _WIN32
+    const int status = _pclose(pipe);
+    result.exit_code = status;
+#else
     const int status = ::pclose(pipe);
     if (status == -1) {
         result.exit_code = -1;
@@ -207,6 +256,7 @@ inline CommandResult runCommand(const std::string& cmd) {
     } else {
         result.exit_code = -1;
     }
+#endif
 
     return result;
 }
@@ -331,6 +381,10 @@ struct ProcessUsage {
 };
 
 inline int countNetworkSockets(int pid) {
+#ifdef _WIN32
+    (void)pid;
+    return 0;  // Stub for Windows
+#else
     int count = 0;
     std::string fd_dir = "/proc/" + std::to_string(pid) + "/fd";
     std::error_code ec;
@@ -344,10 +398,17 @@ inline int countNetworkSockets(int pid) {
         }
     }
     return count;
+#endif
 }
 
 inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, std::size_t top_n) {
     std::vector<ProcessUsage> rows;
+#ifdef _WIN32
+    (void)sort_key;
+    (void)top_n;
+    // Process parsing depends heavily on Linux tools, unavail on Windows out of the box
+    return rows;
+#else
     if (!commandExists("ps")) {
         return rows;
     }
@@ -397,6 +458,7 @@ inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, st
     }
 
     return rows;
+#endif
 }
 
 inline void printTopProcessTable(const std::vector<ProcessUsage>& rows) {

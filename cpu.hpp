@@ -132,7 +132,7 @@ inline std::optional<std::array<double, 3>> readLoadAverage() {
     return values;
 }
 
-inline std::optional<double> runMicroBenchmarkOnCore(int core_id) {
+inline std::optional<double> runBenchmarkOnCore(int core_id) {
     std::optional<double> result;
     std::thread t([&result, core_id]() {
         cpu_set_t cpuset;
@@ -192,9 +192,9 @@ inline void printCpuSection(const std::vector<ProcessUsage>& top_cpu) {
     }
 
     if (cpu.cores > 0) {
-        printSubHeader("Per-Core Micro-Benchmark (100M ops)");
+        printSubHeader("Per-Core Benchmark (100M ops)");
         for (int i = 0; i < cpu.cores; ++i) {
-            const auto bench = runMicroBenchmarkOnCore(i);
+            const auto bench = runBenchmarkOnCore(i);
             std::ostringstream label;
             label << "  Core " << i;
             if (bench) {

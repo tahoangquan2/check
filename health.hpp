@@ -97,7 +97,9 @@ inline std::optional<double> runSingleReadBenchmark(std::size_t size_mb, int run
     }
 
     // drop page cache for accurate read testing if running as root
-    runCommand("sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null");
+    if (::geteuid() == 0) {
+        runCommand("sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null");
+    }
 
     constexpr std::size_t chunk_size = 1024 * 1024;
     std::vector<char> buffer(chunk_size);
@@ -154,24 +156,54 @@ struct ThermalInfo {
 
 inline std::vector<ThermalInfo> collectThermals() {
     std::vector<ThermalInfo> values;
-    const auto entries = listDirectory("/sys/class/thermal");
-    for (const auto& entry : entries) {
-        const std::string name = entry.filename().string();
-        if (!startsWith(name, "thermal_zone")) {
-            continue;
-        }
 
-        ThermalInfo info;
-        info.zone = name;
-        info.type = readFirstLine((entry / "type").string()).value_or("N/A");
-
-        const auto temp_raw = readLongFromFile((entry / "temp").string());
-        if (temp_raw) {
-            const double value = static_cast<double>(*temp_raw);
-            info.temp_c = (std::abs(value) >= 1000.0) ? (value / 1000.0) : value;
+    std::error_code ec;
+    auto thermal_it = fs::directory_iterator("/sys/class/thermal", ec);
+    if (!ec) {
+        for (const auto& entry : thermal_it) {
+            const std::string name = entry.path().filename().string();
+            if (startsWith(name, "thermal_zone")) {
+                ThermalInfo info;
+                info.zone = name;
+                info.type = readFirstLine((entry.path() / "type").string()).value_or("N/A");
+                const auto temp_raw = readLongFromFile((entry.path() / "temp").string());
+                if (temp_raw) {
+                    const double value = static_cast<double>(*temp_raw);
+                    info.temp_c = (std::abs(value) >= 1000.0) ? (value / 1000.0) : value;
+                }
+                values.push_back(info);
+            }
         }
-        values.push_back(info);
     }
+
+    auto hwmon_it = fs::directory_iterator("/sys/class/hwmon", ec);
+    if (!ec) {
+        for (const auto& hwmon_entry : hwmon_it) {
+            const std::string hwmon_name =
+                readFirstLine((hwmon_entry.path() / "name").string()).value_or("hwmon");
+            std::error_code ec2;
+            for (const auto& file_entry : fs::directory_iterator(hwmon_entry.path(), ec2)) {
+                const std::string filename = file_entry.path().filename().string();
+                if (startsWith(filename, "temp") && filename.find("_input") != std::string::npos) {
+                    std::string prefix = filename.substr(0, filename.find("_input"));
+                    std::string label_file = (hwmon_entry.path() / (prefix + "_label")).string();
+                    std::string label =
+                        readFirstLine(label_file).value_or(hwmon_name + " " + prefix);
+
+                    ThermalInfo info;
+                    info.zone = hwmon_entry.path().filename().string() + "/" + prefix;
+                    info.type = label;
+                    const auto temp_raw = readLongFromFile(file_entry.path().string());
+                    if (temp_raw) {
+                        const double value = static_cast<double>(*temp_raw);
+                        info.temp_c = (std::abs(value) >= 1000.0) ? (value / 1000.0) : value;
+                    }
+                    values.push_back(info);
+                }
+            }
+        }
+    }
+
     return values;
 }
 
@@ -187,10 +219,10 @@ inline void printImportantHealthSection() {
         printKeyValue("Root Disk Usage", colorize("UNAVAILABLE", ansi::YELLOW));
     }
 
-    printSubHeader("Disk Write Micro-Benchmark (128MB)");
+    printSubHeader("Disk Write Benchmark (256MB)");
     std::vector<double> benchmark_results;
-    for (int i = 1; i <= 2; ++i) {
-        const auto run = runSingleWriteBenchmark(128, i, true);
+    for (int i = 1; i <= 3; ++i) {
+        const auto run = runSingleWriteBenchmark(256, i, true);
         if (run) {
             benchmark_results.push_back(*run);
             std::ostringstream label;
@@ -215,10 +247,18 @@ inline void printImportantHealthSection() {
         printKeyValue("  Write Average", colorize("UNAVAILABLE", ansi::YELLOW));
     }
 
-    printSubHeader("Disk Read Micro-Benchmark (128MB)");
+    printSubHeader("Disk Read Benchmark (256MB)");
+    if (::geteuid() != 0) {
+        std::cout << "  "
+                  << colorize(
+                         "Warning: Cannot drop caches without root privileges, read benchmark "
+                         "results may be artificially high.",
+                         ansi::YELLOW)
+                  << "\n";
+    }
     std::vector<double> read_results;
-    for (int i = 1; i <= 2; ++i) {
-        const auto run = runSingleReadBenchmark(128, i);
+    for (int i = 1; i <= 3; ++i) {
+        const auto run = runSingleReadBenchmark(256, i);
         if (run) {
             read_results.push_back(*run);
             std::ostringstream label;

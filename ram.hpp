@@ -30,7 +30,7 @@ inline std::map<std::string, long long> readMemInfo() {
     return info;
 }
 
-inline std::optional<double> runMemoryMicroBenchmark() {
+inline std::optional<double> runMemoryBenchmark() {
     constexpr std::size_t size_bytes = 256ULL * 1024ULL * 1024ULL;
     char* buf = static_cast<char*>(std::malloc(size_bytes));
     if (!buf) {
@@ -85,7 +85,7 @@ inline void printRamSection(const std::vector<ProcessUsage>& top_ram) {
     printKeyValue("Swap Used",
                   swap_used >= 0 ? formatKilobytes(swap_used) : colorize("N/A", ansi::YELLOW));
 
-    const auto bench = runMemoryMicroBenchmark();
+    const auto bench = runMemoryBenchmark();
     if (bench) {
         std::ostringstream out;
         out << std::fixed << std::setprecision(2) << *bench << " MB/s";

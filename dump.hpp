@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <vector>
 
 #ifdef _WIN32
@@ -604,6 +603,42 @@ inline void printNetworkInterfacesFromSysfs() {
         std::cout << "    " << name << " state=" << state << " mac=" << mac << "\n";
     }
 #endif
+}
+
+inline void printMachineSummarySection() {
+    printSectionHeader("SIMPLE INFO");
+
+    printKeyValue("OS", getOsPrettyName());
+
+#ifdef _WIN32
+    printKeyValue("Kernel", getWindowsKernelVersion());
+    printKeyValue("Architecture", getWindowsArchitecture());
+#else
+    struct utsname uname_data{};
+    if (::uname(&uname_data) == 0) {
+        printKeyValue("Kernel", uname_data.release);
+        printKeyValue("Architecture", uname_data.machine);
+    } else {
+        printKeyValue("Kernel", colorize("N/A", ansi::YELLOW));
+        printKeyValue("Architecture", colorize("N/A", ansi::YELLOW));
+    }
+#endif
+
+    printKeyValue("Hostname", getHostname());
+    printKeyValue("Current User", getCurrentUser());
+
+    const auto uptime = readUptimeSeconds();
+    printKeyValue("Uptime", uptime ? formatUptime(*uptime) : colorize("N/A", ansi::YELLOW));
+
+    const auto [processes, threads] = countProcessesAndThreads();
+    printKeyValue("Process Count", std::to_string(processes));
+    printKeyValue("Thread Count", std::to_string(threads));
+
+    printKeyValue("Virtualization", detectVirtualization());
+
+    const auto [route, iface] = getDefaultRouteAndInterface();
+    printKeyValue("Default Interface", iface);
+    printKeyValue("Default Route", route);
 }
 
 #ifdef _WIN32

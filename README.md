@@ -1,23 +1,23 @@
-# check
+# Machine Health CLI
 
-Single-file Linux machine health CLI written in C++ (`check.cpp`).
-
-## Compile with clang (Linux)
+## Compile
 
 ```bash
 clang++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-exceptions -fno-rtti -Wall -Wextra -pedantic check.cpp -pthread -o check
 ```
 
-## Compile with g++ (Windows MinGW)
-
-```powershell
-g++ -std=c++17 -Ofast -march=native -mtune=native -funroll-loops -fno-exceptions -fno-rtti -Wall -Wextra -pedantic check.cpp -pthread -o check -lws2_32 -liphlpapi -lpsapi
-```
+In Windows, add `-lws2_32 -liphlpapi -lpsapi` to the command above.
 
 ## Run
 
 ```bash
 ./check
+```
+
+Use `--full` to include the complete report:
+
+```bash
+./check --full
 ```
 
 ## Install as a command

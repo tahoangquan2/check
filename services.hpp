@@ -18,6 +18,11 @@ struct ServiceRuntimeUnit {
     std::string description;
 };
 
+struct WindowsServiceRow {
+    std::string name;
+    std::string state;
+};
+
 inline std::vector<ServiceUnitFile> listSystemdUnitFiles() {
     std::vector<ServiceUnitFile> rows;
     if (!commandExists("systemctl")) {
@@ -102,8 +107,127 @@ inline void printServiceRuntimeTable(const std::vector<ServiceRuntimeUnit>& rows
     std::cout << std::left;
 }
 
+inline std::string parseWindowsServiceState(const std::string& line) {
+    const auto colon = line.find(':');
+    if (colon == std::string::npos) {
+        return "UNKNOWN";
+    }
+
+    std::istringstream parser(trim(line.substr(colon + 1)));
+    std::string state_code;
+    std::string state_name;
+    parser >> state_code >> state_name;
+    if (state_name.empty()) {
+        return "UNKNOWN";
+    }
+    return state_name;
+}
+
+inline std::vector<WindowsServiceRow> listWindowsServices() {
+    std::vector<WindowsServiceRow> rows;
+    if (!commandExists("sc")) {
+        return rows;
+    }
+
+    const auto result = runCommand("sc.exe query type= service state= all 2>nul");
+    if (result.exit_code != 0) {
+        return rows;
+    }
+
+    std::string current_name;
+    std::string current_state;
+
+    const auto lines = splitLines(result.output);
+    for (const auto& line : lines) {
+        if (startsWith(line, "SERVICE_NAME:")) {
+            if (!current_name.empty()) {
+                WindowsServiceRow row;
+                row.name = current_name;
+                row.state = current_state.empty() ? "UNKNOWN" : current_state;
+                rows.push_back(row);
+            }
+
+            current_name = trim(line.substr(std::string("SERVICE_NAME:").size()));
+            current_state.clear();
+            continue;
+        }
+
+        if (startsWith(line, "STATE")) {
+            current_state = parseWindowsServiceState(line);
+        }
+    }
+
+    if (!current_name.empty()) {
+        WindowsServiceRow row;
+        row.name = current_name;
+        row.state = current_state.empty() ? "UNKNOWN" : current_state;
+        rows.push_back(row);
+    }
+
+    return rows;
+}
+
+inline void printWindowsServiceTable(const std::vector<WindowsServiceRow>& rows,
+                                     std::size_t limit) {
+    if (rows.empty()) {
+        std::cout << "    " << colorize("N/A", ansi::YELLOW) << "\n";
+        return;
+    }
+
+    const std::size_t count = std::min(limit, rows.size());
+    std::cout << "    " << std::left << std::setw(40) << "SERVICE" << "STATE"
+              << "\n";
+    for (std::size_t i = 0; i < count; ++i) {
+        std::cout << "    " << std::left << std::setw(40) << rows[i].name << rows[i].state << "\n";
+    }
+    if (rows.size() > count) {
+        std::cout << "    "
+                  << colorize("... " + std::to_string(rows.size() - count) + " more", ansi::YELLOW)
+                  << "\n";
+    }
+    std::cout << std::left;
+}
+
 inline void printServicesSection() {
     printSectionHeader("SERVICES");
+
+#ifdef _WIN32
+    const auto services = listWindowsServices();
+    if (services.empty()) {
+        printKeyValue("sc.exe", colorize("UNAVAILABLE OR NO ACCESS", ansi::YELLOW));
+        return;
+    }
+
+    std::map<std::string, int> state_counts;
+    std::vector<WindowsServiceRow> running_services;
+    std::vector<WindowsServiceRow> stopped_services;
+    for (const auto& service : services) {
+        ++state_counts[service.state];
+        if (service.state == "RUNNING") {
+            running_services.push_back(service);
+        }
+        if (service.state == "STOPPED") {
+            stopped_services.push_back(service);
+        }
+    }
+
+    printKeyValue("Service Control", colorize("available (sc.exe)", ansi::GREEN));
+    printKeyValue("Total Services", std::to_string(services.size()));
+    printKeyValue("Running Services", std::to_string(running_services.size()));
+    printKeyValue("Stopped Services", std::to_string(stopped_services.size()));
+
+    printSubHeader("Service States");
+    for (const auto& [state, count] : state_counts) {
+        printKeyValue("  " + state, std::to_string(count));
+    }
+
+    printSubHeader("Running Services (all)");
+    printWindowsServiceTable(running_services, running_services.size());
+
+    printSubHeader("Stopped Services (first 20)");
+    printWindowsServiceTable(stopped_services, 20);
+    return;
+#endif
 
     if (!commandExists("systemctl")) {
         printKeyValue("systemctl", colorize("UNAVAILABLE", ansi::YELLOW));

@@ -26,7 +26,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-
 #endif
 
 #include <algorithm>
@@ -707,10 +706,27 @@ inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, st
 #endif
 }
 
+inline std::string fitTableCell(const std::string& value, std::size_t width) {
+    if (value.size() <= width) {
+        return value;
+    }
+    if (width <= 3) {
+        return value.substr(0, width);
+    }
+    return value.substr(0, width - 3) + "...";
+}
+
 inline void printTopProcessTable(const std::vector<ProcessUsage>& rows) {
+    std::size_t command_width = 16;
+    for (const auto& row : rows) {
+        command_width = std::max(command_width, row.command.size() + 1);
+    }
+    command_width = std::min<std::size_t>(command_width, 28);
+
     std::cout << "    " << std::right << std::setw(8) << "PID"
-              << " " << std::left << std::setw(16) << "COMMAND" << std::right << std::setw(6)
-              << "%CPU" << std::setw(6) << "%MEM" << std::setw(6) << "NET" << "\n";
+              << " " << std::left << std::setw(static_cast<int>(command_width)) << "COMMAND"
+              << std::right << std::setw(6) << "%CPU" << std::setw(6) << "%MEM" << std::setw(6)
+              << "NET" << "\n";
 
     for (const auto& row : rows) {
         std::ostringstream cpu_text;
@@ -720,8 +736,10 @@ inline void printTopProcessTable(const std::vector<ProcessUsage>& rows) {
         mem_text << std::fixed << std::setprecision(1) << row.mem;
 
         std::cout << "    " << std::right << std::setw(8) << row.pid << " " << std::left
-                  << std::setw(16) << row.command << std::right << std::setw(6) << cpu_text.str()
-                  << std::setw(6) << mem_text.str() << std::setw(6) << row.net_sockets << "\n";
+                  << std::setw(static_cast<int>(command_width))
+                  << fitTableCell(row.command, command_width) << std::right << std::setw(6)
+                  << cpu_text.str() << std::setw(6) << mem_text.str() << std::setw(6)
+                  << row.net_sockets << "\n";
     }
     std::cout << std::left;
 }

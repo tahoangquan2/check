@@ -21,6 +21,7 @@ struct ServiceRuntimeUnit {
 struct WindowsServiceRow {
     std::string name;
     std::string state;
+    std::string exe_path;
 };
 
 inline std::vector<ServiceUnitFile> listSystemdUnitFiles() {
@@ -144,6 +145,7 @@ inline std::vector<WindowsServiceRow> listWindowsServices() {
                 WindowsServiceRow row;
                 row.name = current_name;
                 row.state = current_state.empty() ? "UNKNOWN" : current_state;
+                row.exe_path.clear();
                 rows.push_back(row);
             }
 
@@ -161,10 +163,49 @@ inline std::vector<WindowsServiceRow> listWindowsServices() {
         WindowsServiceRow row;
         row.name = current_name;
         row.state = current_state.empty() ? "UNKNOWN" : current_state;
+        row.exe_path.clear();
         rows.push_back(row);
     }
 
     return rows;
+}
+
+inline std::string queryWindowsServiceExePath(const std::string& service_name) {
+    if (service_name.empty()) {
+        return "N/A";
+    }
+
+    const auto result = runCommand("sc.exe qc \"" + service_name + "\" 2>nul");
+    if (result.exit_code != 0) {
+        return "N/A";
+    }
+
+    const auto lines = splitLines(result.output);
+    for (const auto& line : lines) {
+        if (!startsWith(line, "BINARY_PATH_NAME")) {
+            continue;
+        }
+
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+
+        const std::string parsed = trim(line.substr(colon + 1));
+        if (!parsed.empty()) {
+            return parsed;
+        }
+    }
+
+    return "N/A";
+}
+
+inline void populateWindowsServiceExePaths(std::vector<WindowsServiceRow>& rows,
+                                           std::size_t limit) {
+    const std::size_t count = std::min(limit, rows.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        rows[i].exe_path = queryWindowsServiceExePath(rows[i].name);
+    }
 }
 
 inline void printWindowsServiceTable(const std::vector<WindowsServiceRow>& rows,
@@ -175,10 +216,11 @@ inline void printWindowsServiceTable(const std::vector<WindowsServiceRow>& rows,
     }
 
     const std::size_t count = std::min(limit, rows.size());
-    std::cout << "    " << std::left << std::setw(40) << "SERVICE" << "STATE"
+    std::cout << "    " << std::left << std::setw(40) << "SERVICE" << "EXE PATH"
               << "\n";
     for (std::size_t i = 0; i < count; ++i) {
-        std::cout << "    " << std::left << std::setw(40) << rows[i].name << rows[i].state << "\n";
+        std::cout << "    " << std::left << std::setw(40) << rows[i].name
+                  << (rows[i].exe_path.empty() ? "N/A" : rows[i].exe_path) << "\n";
     }
     if (rows.size() > count) {
         std::cout << "    "
@@ -220,6 +262,9 @@ inline void printServicesSection() {
     for (const auto& [state, count] : state_counts) {
         printKeyValue("  " + state, std::to_string(count));
     }
+
+    populateWindowsServiceExePaths(running_services, running_services.size());
+    populateWindowsServiceExePaths(stopped_services, 20);
 
     printSubHeader("Running Services (all)");
     printWindowsServiceTable(running_services, running_services.size());

@@ -32,6 +32,7 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -44,8 +45,6 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -60,11 +59,6 @@ constexpr const char* MAGENTA = "\033[35m";
 constexpr const char* CYAN = "\033[36m";
 }  // namespace ansi
 
-struct CommandResult {
-    int exit_code = -1;
-    std::string output;
-};
-
 enum class CheckState { Pass, Fail, Unavailable };
 
 struct SimpleCheck {
@@ -72,8 +66,35 @@ struct SimpleCheck {
     std::string detail;
 };
 
+inline bool& terminalColorEnabled() {
+    static bool enabled = false;
+    return enabled;
+}
+
+inline bool stdoutIsTerminal() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdout)) != 0;
+#else
+    return ::isatty(STDOUT_FILENO) != 0;
+#endif
+}
+
+inline void configureTerminal(bool no_color) {
+    terminalColorEnabled() = !no_color && stdoutIsTerminal();
+#ifdef _WIN32
+    if (terminalColorEnabled()) {
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode = 0;
+        if (output == INVALID_HANDLE_VALUE || !GetConsoleMode(output, &mode) ||
+            !SetConsoleMode(output, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+            terminalColorEnabled() = false;
+        }
+    }
+#endif
+}
+
 inline std::string colorize(const std::string& text, const char* color) {
-    return std::string(color) + text + ansi::RESET;
+    return terminalColorEnabled() ? std::string(color) + text + ansi::RESET : text;
 }
 
 inline std::string trim(const std::string& input) {
@@ -92,15 +113,21 @@ inline bool startsWith(const std::string& value, const std::string& prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
+inline char lowerCharacter(char value) {
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(value)));
+}
+
+inline bool digitCharacter(char value) {
+    return std::isdigit(static_cast<unsigned char>(value)) != 0;
+}
+
 inline std::string toLower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(value.begin(), value.end(), value.begin(), lowerCharacter);
     return value;
 }
 
 inline bool isDigits(const std::string& value) {
-    return !value.empty() && std::all_of(value.begin(), value.end(),
-                                         [](unsigned char c) { return std::isdigit(c) != 0; });
+    return !value.empty() && std::all_of(value.begin(), value.end(), digitCharacter);
 }
 
 inline std::optional<std::string> readFile(const std::string& path) {
@@ -185,13 +212,6 @@ inline std::vector<std::string> splitLines(const std::string& text) {
 }
 
 #ifdef _WIN32
-inline unsigned long long fileTimeToUint64(const FILETIME& value) {
-    ULARGE_INTEGER u{};
-    u.LowPart = value.dwLowDateTime;
-    u.HighPart = value.dwHighDateTime;
-    return u.QuadPart;
-}
-
 inline std::string wideToUtf8(const std::wstring& value) {
     if (value.empty()) {
         return {};
@@ -211,137 +231,23 @@ inline std::string wideToUtf8(const std::wstring& value) {
     return out;
 }
 
-struct ProcessSnapshotRow {
-    DWORD pid = 0;
-    std::string command;
-    unsigned long long cpu_time_100ns = 0;
-    SIZE_T working_set = 0;
-};
-
-inline std::vector<ProcessSnapshotRow> captureProcessSnapshot() {
-    std::vector<ProcessSnapshotRow> rows;
-
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) {
-        return rows;
+inline std::optional<std::string> readWindowsRegistryString(HKEY root, const char* path,
+                                                            const char* name) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExA(root, path, 0, KEY_READ, &key) != ERROR_SUCCESS) return std::nullopt;
+    DWORD type = 0;
+    DWORD size = 0;
+    LONG status = RegQueryValueExA(key, name, nullptr, &type, nullptr, &size);
+    if (status != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || size == 0) {
+        RegCloseKey(key);
+        return std::nullopt;
     }
-
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    const DWORD self_pid = GetCurrentProcessId();
-
-    if (!Process32FirstW(snap, &entry)) {
-        CloseHandle(snap);
-        return rows;
-    }
-
-    do {
-        if (entry.th32ProcessID == 0 || entry.th32ProcessID == self_pid) {
-            continue;
-        }
-
-        ProcessSnapshotRow row;
-        row.pid = entry.th32ProcessID;
-        row.command = wideToUtf8(entry.szExeFile);
-
-        HANDLE process =
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, row.pid);
-        if (process != nullptr) {
-            FILETIME create_time{}, exit_time{}, kernel_time{}, user_time{};
-            if (GetProcessTimes(process, &create_time, &exit_time, &kernel_time, &user_time)) {
-                row.cpu_time_100ns = fileTimeToUint64(kernel_time) + fileTimeToUint64(user_time);
-            }
-
-            PROCESS_MEMORY_COUNTERS counters{};
-            if (GetProcessMemoryInfo(process, &counters, sizeof(counters))) {
-                row.working_set = counters.WorkingSetSize;
-            }
-
-            WCHAR image_name[MAX_PATH] = {0};
-            DWORD image_len = MAX_PATH;
-            if (QueryFullProcessImageNameW(process, 0, image_name, &image_len) && image_len > 0) {
-                std::wstring full_path(image_name, image_len);
-                const auto slash = full_path.find_last_of(L"\\/");
-                if (slash != std::wstring::npos && slash + 1 < full_path.size()) {
-                    full_path = full_path.substr(slash + 1);
-                }
-                const std::string parsed = wideToUtf8(full_path);
-                if (!parsed.empty()) {
-                    row.command = parsed;
-                }
-            }
-            CloseHandle(process);
-        }
-
-        if (row.command.empty()) {
-            row.command = "pid_" + std::to_string(row.pid);
-        }
-        rows.push_back(row);
-    } while (Process32NextW(snap, &entry));
-
-    CloseHandle(snap);
-    return rows;
-}
-
-inline void appendTcpSocketCounts(int family, std::unordered_map<DWORD, int>& counts) {
-    ULONG size = 0;
-    DWORD rc = GetExtendedTcpTable(nullptr, &size, FALSE, family, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (rc != ERROR_INSUFFICIENT_BUFFER) {
-        return;
-    }
-
-    std::vector<unsigned char> buffer(size);
-    rc = GetExtendedTcpTable(buffer.data(), &size, FALSE, family, TCP_TABLE_OWNER_PID_ALL, 0);
-    if (rc != NO_ERROR) {
-        return;
-    }
-
-    if (family == AF_INET) {
-        const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
-        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-            counts[table->table[i].dwOwningPid] += 1;
-        }
-    } else if (family == AF_INET6) {
-        const auto* table = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(buffer.data());
-        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-            counts[table->table[i].dwOwningPid] += 1;
-        }
-    }
-}
-
-inline void appendUdpSocketCounts(int family, std::unordered_map<DWORD, int>& counts) {
-    ULONG size = 0;
-    DWORD rc = GetExtendedUdpTable(nullptr, &size, FALSE, family, UDP_TABLE_OWNER_PID, 0);
-    if (rc != ERROR_INSUFFICIENT_BUFFER) {
-        return;
-    }
-
-    std::vector<unsigned char> buffer(size);
-    rc = GetExtendedUdpTable(buffer.data(), &size, FALSE, family, UDP_TABLE_OWNER_PID, 0);
-    if (rc != NO_ERROR) {
-        return;
-    }
-
-    if (family == AF_INET) {
-        const auto* table = reinterpret_cast<const MIB_UDPTABLE_OWNER_PID*>(buffer.data());
-        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-            counts[table->table[i].dwOwningPid] += 1;
-        }
-    } else if (family == AF_INET6) {
-        const auto* table = reinterpret_cast<const MIB_UDP6TABLE_OWNER_PID*>(buffer.data());
-        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
-            counts[table->table[i].dwOwningPid] += 1;
-        }
-    }
-}
-
-inline std::unordered_map<DWORD, int> buildSocketCountByPid() {
-    std::unordered_map<DWORD, int> counts;
-    appendTcpSocketCounts(AF_INET, counts);
-    appendTcpSocketCounts(AF_INET6, counts);
-    appendUdpSocketCounts(AF_INET, counts);
-    appendUdpSocketCounts(AF_INET6, counts);
-    return counts;
+    std::vector<char> buffer(size + 1, '\0');
+    status = RegQueryValueExA(key, name, nullptr, &type,
+                              reinterpret_cast<unsigned char*>(buffer.data()), &size);
+    RegCloseKey(key);
+    if (status != ERROR_SUCCESS) return std::nullopt;
+    return trim(std::string(buffer.data()));
 }
 #endif
 
@@ -397,58 +303,37 @@ inline bool commandExists(const std::string& cmd) {
 #endif
 }
 
-inline CommandResult runCommand(const std::string& cmd) {
-    CommandResult result;
-#ifdef _WIN32
-    FILE* pipe = _popen(cmd.c_str(), "r");
-#else
-    FILE* pipe = ::popen(cmd.c_str(), "r");
-#endif
-    if (pipe == nullptr) {
-        return result;
-    }
+struct DirectoryListing {
+    std::vector<fs::path> entries;
+    std::error_code error;
+};
 
-    char buffer[4096];
-    while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        result.output += buffer;
-    }
-
-#ifdef _WIN32
-    const int status = _pclose(pipe);
-    result.exit_code = status;
-#else
-    const int status = ::pclose(pipe);
-    if (status == -1) {
-        result.exit_code = -1;
-    } else if (WIFEXITED(status)) {
-        result.exit_code = WEXITSTATUS(status);
-    } else {
-        result.exit_code = -1;
-    }
-#endif
-
-    return result;
+inline bool pathExists(const fs::path& path) {
+    std::error_code error;
+    return fs::exists(path, error) && !error;
 }
 
-inline std::vector<fs::path> listDirectory(const fs::path& path) {
-    std::vector<fs::path> entries;
+inline DirectoryListing listDirectory(const fs::path& path) {
+    DirectoryListing listing;
 
     std::error_code ec;
     fs::directory_iterator iter(path, ec);
     if (ec) {
-        return {};
+        listing.error = ec;
+        return listing;
     }
     fs::directory_iterator end;
     while (iter != end) {
-        entries.push_back(iter->path());
+        listing.entries.push_back(iter->path());
         iter.increment(ec);
         if (ec) {
+            listing.error = ec;
             break;
         }
     }
 
-    std::sort(entries.begin(), entries.end());
-    return entries;
+    std::sort(listing.entries.begin(), listing.entries.end());
+    return listing;
 }
 
 inline std::string formatBytes(long double bytes) {
@@ -495,18 +380,65 @@ inline std::string formatPercent(double value, int precision = 1) {
     return out.str();
 }
 
-inline std::string colorByPercent(double value) {
+enum class PercentLevel { Good, Warning, Critical };
+
+inline PercentLevel capacityPercentLevel(double value) {
+    if (value >= 85.0) return PercentLevel::Good;
+    if (value >= 60.0) return PercentLevel::Warning;
+    return PercentLevel::Critical;
+}
+
+inline PercentLevel usagePercentLevel(double value) {
+    if (value >= 85.0) return PercentLevel::Critical;
+    if (value >= 60.0) return PercentLevel::Warning;
+    return PercentLevel::Good;
+}
+
+inline std::string colorCapacityPercent(double value) {
     const std::string text = formatPercent(value, 1);
-    if (value >= 85.0) {
+    if (capacityPercentLevel(value) == PercentLevel::Good) {
         return colorize(text, ansi::GREEN);
     }
-    if (value >= 60.0) {
+    if (capacityPercentLevel(value) == PercentLevel::Warning) {
         return colorize(text, ansi::YELLOW);
     }
     return colorize(text, ansi::RED);
 }
 
+inline std::string colorUsagePercent(double value) {
+    const std::string text = formatPercent(value, 1);
+    if (usagePercentLevel(value) == PercentLevel::Critical) {
+        return colorize(text, ansi::RED);
+    }
+    if (usagePercentLevel(value) == PercentLevel::Warning) {
+        return colorize(text, ansi::YELLOW);
+    }
+    return colorize(text, ansi::GREEN);
+}
+
+struct ReportCounts {
+    int passed = 0;
+    int failed = 0;
+    int unavailable = 0;
+};
+
+inline ReportCounts& reportCounts() {
+    static ReportCounts counts;
+    return counts;
+}
+
+inline void recordCheck(CheckState state) {
+    if (state == CheckState::Pass) {
+        ++reportCounts().passed;
+    } else if (state == CheckState::Fail) {
+        ++reportCounts().failed;
+    } else {
+        ++reportCounts().unavailable;
+    }
+}
+
 inline std::string stateLabel(CheckState state) {
+    recordCheck(state);
     if (state == CheckState::Pass) {
         return colorize("PASS", ansi::GREEN);
     }
@@ -516,230 +448,161 @@ inline std::string stateLabel(CheckState state) {
     return colorize("UNAVAILABLE", ansi::YELLOW);
 }
 
+inline bool isAnsiSgr(const std::string& value, std::size_t start, std::size_t& end) {
+    if (start + 2 >= value.size() || value[start] != '\x1b' || value[start + 1] != '[') {
+        return false;
+    }
+    std::size_t pos = start + 2;
+    while (pos < value.size() &&
+           (std::isdigit(static_cast<unsigned char>(value[pos])) != 0 || value[pos] == ';')) {
+        ++pos;
+    }
+    if (pos >= value.size() || value[pos] != 'm') {
+        return false;
+    }
+    end = pos + 1;
+    return true;
+}
+
+inline std::string sanitizeTerminalText(const std::string& value) {
+    std::string result;
+    result.reserve(value.size());
+    for (std::size_t i = 0; i < value.size();) {
+        std::size_t ansi_end = i;
+        if (terminalColorEnabled() && isAnsiSgr(value, i, ansi_end)) {
+            result.append(value, i, ansi_end - i);
+            i = ansi_end;
+            continue;
+        }
+        const unsigned char byte = static_cast<unsigned char>(value[i]);
+        if (byte < 0x20 || byte == 0x7f) {
+            result.push_back(' ');
+        } else {
+            result.push_back(value[i]);
+        }
+        ++i;
+    }
+    return result;
+}
+
+inline unsigned int decodeUtf8(const std::string& value, std::size_t& position) {
+    const unsigned char lead = static_cast<unsigned char>(value[position++]);
+    if (lead < 0x80U) return lead;
+    int continuation_count = 0;
+    unsigned int codepoint = 0;
+    if ((lead & 0xe0U) == 0xc0U) {
+        continuation_count = 1;
+        codepoint = lead & 0x1fU;
+    } else if ((lead & 0xf0U) == 0xe0U) {
+        continuation_count = 2;
+        codepoint = lead & 0x0fU;
+    } else if ((lead & 0xf8U) == 0xf0U) {
+        continuation_count = 3;
+        codepoint = lead & 0x07U;
+    } else {
+        return 0xfffdU;
+    }
+    if (position + static_cast<std::size_t>(continuation_count) > value.size()) return 0xfffdU;
+    for (int index = 0; index < continuation_count; ++index) {
+        const unsigned char continuation = static_cast<unsigned char>(value[position]);
+        if ((continuation & 0xc0U) != 0x80U) return 0xfffdU;
+        ++position;
+        codepoint = (codepoint << 6U) | (continuation & 0x3fU);
+    }
+    return codepoint;
+}
+
+inline std::size_t unicodeColumnWidth(unsigned int codepoint) {
+    if ((codepoint >= 0x0300U && codepoint <= 0x036fU) ||
+        (codepoint >= 0x1ab0U && codepoint <= 0x1affU) ||
+        (codepoint >= 0x1dc0U && codepoint <= 0x1dffU) ||
+        (codepoint >= 0x20d0U && codepoint <= 0x20ffU) || codepoint == 0x200dU ||
+        (codepoint >= 0xfe00U && codepoint <= 0xfe0fU) ||
+        (codepoint >= 0xfe20U && codepoint <= 0xfe2fU)) {
+        return 0;
+    }
+    if ((codepoint >= 0x1100U && codepoint <= 0x115fU) || codepoint == 0x2329U ||
+        codepoint == 0x232aU || (codepoint >= 0x2e80U && codepoint <= 0xa4cfU) ||
+        (codepoint >= 0xac00U && codepoint <= 0xd7a3U) ||
+        (codepoint >= 0xf900U && codepoint <= 0xfaffU) ||
+        (codepoint >= 0xfe10U && codepoint <= 0xfe6fU) ||
+        (codepoint >= 0xff00U && codepoint <= 0xff60U) ||
+        (codepoint >= 0x1f300U && codepoint <= 0x1faffU)) {
+        return 2;
+    }
+    return 1;
+}
+
+inline std::size_t utf8DisplayWidth(const std::string& value) {
+    std::size_t position = 0;
+    std::size_t width = 0;
+    while (position < value.size()) width += unicodeColumnWidth(decodeUtf8(value, position));
+    return width;
+}
+
+inline std::string utf8Prefix(const std::string& value, std::size_t width) {
+    std::size_t position = 0;
+    std::size_t columns = 0;
+    while (position < value.size()) {
+        const std::size_t start = position;
+        const std::size_t next_width = unicodeColumnWidth(decodeUtf8(value, position));
+        if (columns + next_width > width) {
+            position = start;
+            break;
+        }
+        columns += next_width;
+    }
+    return value.substr(0, position);
+}
+
+inline std::string fitTableCell(const std::string& raw, std::size_t width) {
+    const std::string value = sanitizeTerminalText(raw);
+    if (utf8DisplayWidth(value) <= width) return value;
+    if (width <= 3) return utf8Prefix(value, width);
+    return utf8Prefix(value, width - 3) + "...";
+}
+
 inline void printSectionHeader(const std::string& title) {
-    std::cout << "\n" << ansi::BOLD << ansi::CYAN << title << ansi::RESET << "\n";
+    std::cout << "\n";
+    if (terminalColorEnabled()) std::cout << ansi::BOLD << ansi::CYAN;
+    std::cout << sanitizeTerminalText(title);
+    if (terminalColorEnabled()) std::cout << ansi::RESET;
+    std::cout << "\n";
 }
 
 inline void printSubHeader(const std::string& title) {
-    std::cout << "  " << ansi::MAGENTA << title << ansi::RESET << "\n";
+    std::cout << "  " << colorize(sanitizeTerminalText(title), ansi::MAGENTA) << "\n";
 }
 
 inline void printKeyValue(const std::string& key, const std::string& value) {
-    std::cout << "  " << std::left << std::setw(28) << key << ": " << value << "\n";
+    std::cout << "  " << std::left << std::setw(28) << sanitizeTerminalText(key) << ": "
+              << sanitizeTerminalText(value) << "\n";
 }
 
-inline void printBlockLines(const std::string& text) {
+inline std::size_t countNonEmptyLines(const std::vector<std::string>& lines) {
+    std::size_t count = 0;
+    for (const std::string& line : lines) {
+        if (!line.empty()) ++count;
+    }
+    return count;
+}
+
+inline void printBlockLines(const std::string& text, std::size_t limit = 100) {
     const auto lines = splitLines(text);
-    if (lines.empty()) {
+    const std::size_t non_empty_lines = countNonEmptyLines(lines);
+    if (non_empty_lines == 0) {
         std::cout << "    " << colorize("N/A", ansi::YELLOW) << "\n";
         return;
     }
+    std::size_t printed = 0;
     for (const auto& line : lines) {
         if (!line.empty()) {
-            std::cout << "    " << line << "\n";
+            if (printed == limit) break;
+            std::cout << "    " << sanitizeTerminalText(line) << "\n";
+            ++printed;
         }
     }
-}
-
-struct ProcessUsage {
-    int pid = -1;
-    std::string command;
-    double cpu = 0.0;
-    double mem = 0.0;
-    int net_sockets = 0;
-};
-
-inline int countNetworkSockets(int pid) {
-#ifdef _WIN32
-    (void)pid;
-    return 0;  // Stub for Windows
-#else
-    int count = 0;
-    std::string fd_dir = "/proc/" + std::to_string(pid) + "/fd";
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(fd_dir, ec)) {
-        std::error_code sym_ec;
-        if (fs::is_symlink(entry, sym_ec)) {
-            auto target = fs::read_symlink(entry, sym_ec);
-            if (!sym_ec && target.string().find("socket:[") == 0) {
-                count++;
-            }
-        }
+    if (non_empty_lines > printed) {
+        std::cout << "    ... " << non_empty_lines - printed << " more lines\n";
     }
-    return count;
-#endif
-}
-
-inline std::vector<ProcessUsage> getTopProcesses(const std::string& sort_key, std::size_t top_n) {
-    std::vector<ProcessUsage> rows;
-#ifdef _WIN32
-    const auto first_snapshot = captureProcessSnapshot();
-    if (first_snapshot.empty()) {
-        return rows;
-    }
-
-    const auto sample_start = std::chrono::steady_clock::now();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    const auto second_snapshot = captureProcessSnapshot();
-    const auto sample_end = std::chrono::steady_clock::now();
-
-    if (second_snapshot.empty()) {
-        return rows;
-    }
-
-    std::unordered_map<DWORD, ProcessSnapshotRow> before;
-    before.reserve(first_snapshot.size());
-    for (const auto& row : first_snapshot) {
-        before[row.pid] = row;
-    }
-
-    MEMORYSTATUSEX mem_status{};
-    mem_status.dwLength = sizeof(mem_status);
-    const bool has_mem = GlobalMemoryStatusEx(&mem_status) != 0;
-    const double total_mem = has_mem ? static_cast<double>(mem_status.ullTotalPhys) : 0.0;
-    const double wall_100ns =
-        std::chrono::duration<double>(sample_end - sample_start).count() * 10000000.0;
-
-    const auto socket_counts = buildSocketCountByPid();
-
-    for (const auto& now : second_snapshot) {
-        ProcessUsage row;
-        row.pid = static_cast<int>(now.pid);
-        row.command = now.command;
-
-        const auto it = before.find(now.pid);
-        if (it != before.end() && wall_100ns > 0.0 &&
-            now.cpu_time_100ns >= it->second.cpu_time_100ns) {
-            const double delta =
-                static_cast<double>(now.cpu_time_100ns - it->second.cpu_time_100ns);
-            row.cpu = (delta / wall_100ns) * 100.0;
-        }
-
-        if (total_mem > 0.0) {
-            row.mem = (static_cast<double>(now.working_set) / total_mem) * 100.0;
-        }
-
-        const auto socket_it = socket_counts.find(now.pid);
-        if (socket_it != socket_counts.end()) {
-            row.net_sockets = socket_it->second;
-        }
-
-        const std::string lowered = toLower(row.command);
-        if (lowered == "check" || lowered == "check.exe") {
-            continue;
-        }
-        rows.push_back(row);
-    }
-
-    if (sort_key == "%cpu") {
-        std::sort(rows.begin(), rows.end(),
-                  [](const ProcessUsage& a, const ProcessUsage& b) { return a.cpu > b.cpu; });
-    } else if (sort_key == "%mem") {
-        std::sort(rows.begin(), rows.end(),
-                  [](const ProcessUsage& a, const ProcessUsage& b) { return a.mem > b.mem; });
-    } else if (sort_key == "net") {
-        std::sort(rows.begin(), rows.end(), [](const ProcessUsage& a, const ProcessUsage& b) {
-            if (a.net_sockets == b.net_sockets) {
-                return a.cpu > b.cpu;
-            }
-            return a.net_sockets > b.net_sockets;
-        });
-    } else {
-        std::sort(rows.begin(), rows.end(),
-                  [](const ProcessUsage& a, const ProcessUsage& b) { return a.cpu > b.cpu; });
-    }
-
-    if (rows.size() > top_n) {
-        rows.resize(top_n);
-    }
-    return rows;
-#else
-    if (!commandExists("ps")) {
-        return rows;
-    }
-
-    std::string cmd;
-    if (sort_key == "net") {
-        cmd = "ps -eo pid=,comm=,%cpu=,%mem= 2>/dev/null";
-    } else {
-        cmd = "ps -eo pid=,comm=,%cpu=,%mem= --sort=-" + sort_key + " 2>/dev/null";
-    }
-
-    const auto result = runCommand(cmd);
-    if (result.exit_code != 0) {
-        return rows;
-    }
-
-    const int my_pid = ::getpid();
-    const auto lines = splitLines(result.output);
-    for (const auto& line : lines) {
-        if (line.empty()) {
-            continue;
-        }
-        std::istringstream parser(line);
-        ProcessUsage process;
-        if (!(parser >> process.pid >> process.command >> process.cpu >> process.mem)) {
-            continue;
-        }
-        if (process.pid == my_pid || process.command == "check") {
-            continue;
-        }
-
-        process.net_sockets = countNetworkSockets(process.pid);
-        rows.push_back(process);
-
-        if (sort_key != "net" && rows.size() >= top_n) {
-            break;
-        }
-    }
-
-    if (sort_key == "net") {
-        std::sort(rows.begin(), rows.end(), [](const ProcessUsage& a, const ProcessUsage& b) {
-            return a.net_sockets > b.net_sockets;
-        });
-        if (rows.size() > top_n) {
-            rows.resize(top_n);
-        }
-    }
-
-    return rows;
-#endif
-}
-
-inline std::string fitTableCell(const std::string& value, std::size_t width) {
-    if (value.size() <= width) {
-        return value;
-    }
-    if (width <= 3) {
-        return value.substr(0, width);
-    }
-    return value.substr(0, width - 3) + "...";
-}
-
-inline void printTopProcessTable(const std::vector<ProcessUsage>& rows) {
-    std::size_t command_width = 16;
-    for (const auto& row : rows) {
-        command_width = std::max(command_width, row.command.size() + 1);
-    }
-    command_width = std::min<std::size_t>(command_width, 28);
-
-    std::cout << "    " << std::right << std::setw(8) << "PID"
-              << " " << std::left << std::setw(static_cast<int>(command_width)) << "COMMAND"
-              << std::right << std::setw(6) << "%CPU" << std::setw(6) << "%MEM" << std::setw(6)
-              << "NET" << "\n";
-
-    for (const auto& row : rows) {
-        std::ostringstream cpu_text;
-        cpu_text << std::fixed << std::setprecision(1) << row.cpu;
-
-        std::ostringstream mem_text;
-        mem_text << std::fixed << std::setprecision(1) << row.mem;
-
-        std::cout << "    " << std::right << std::setw(8) << row.pid << " " << std::left
-                  << std::setw(static_cast<int>(command_width))
-                  << fitTableCell(row.command, command_width) << std::right << std::setw(6)
-                  << cpu_text.str() << std::setw(6) << mem_text.str() << std::setw(6)
-                  << row.net_sockets << "\n";
-    }
-    std::cout << std::left;
 }

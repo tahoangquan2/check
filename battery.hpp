@@ -1,4 +1,5 @@
 #pragma once
+#include "command.hpp"
 #include "utils.hpp"
 
 struct BatteryInfo {
@@ -15,20 +16,25 @@ struct BatteryInfo {
     std::optional<double> health_percent;
 };
 
-inline std::vector<BatteryInfo> collectBatteries() {
+inline std::vector<BatteryInfo> collectBatteries(std::string* collection_error = nullptr) {
     std::vector<BatteryInfo> batteries;
 #ifdef _WIN32
+    (void)collection_error;
     std::optional<long long> design_voltage_mv;
     std::optional<long long> estimated_runtime_min;
-    const auto cim = runCommand(
-        "powershell -NoProfile -Command "
-        "\"$b=Get-CimInstance Win32_Battery | Select-Object -First 1; "
-        "if($b){"
-        "Write-Output ('DesignVoltage=' + $b.DesignVoltage);"
-        "Write-Output ('EstimatedRunTime=' + $b.EstimatedRunTime);"
-        "Write-Output ('BatteryLifeTime=' + $b.BatteryLifeTime)"
-        "}\" 2>nul");
-    if (cim.exit_code == 0) {
+    std::optional<long long> full_capacity;
+    std::optional<long long> design_capacity;
+    const CommandResult cim = runPowerShell(
+        "$b=Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1; "
+        "$f=Get-CimInstance -Namespace root/wmi BatteryFullChargedCapacity "
+        "-ErrorAction SilentlyContinue | Select-Object -First 1; "
+        "$d=Get-CimInstance -Namespace root/wmi BatteryStaticData "
+        "-ErrorAction SilentlyContinue | Select-Object -First 1; if($b){"
+        "[Console]::Out.WriteLine('DesignVoltage=' + $b.DesignVoltage);"
+        "[Console]::Out.WriteLine('EstimatedRunTime=' + $b.EstimatedRunTime)};"
+        "if($f){[Console]::Out.WriteLine('FullCapacity=' + $f.FullChargedCapacity)};"
+        "if($d){[Console]::Out.WriteLine('DesignCapacity=' + $d.DesignedCapacity)}");
+    if (cim.ok()) {
         for (const auto& line : splitLines(cim.output)) {
             const auto eq = line.find('=');
             if (eq == std::string::npos) {
@@ -41,11 +47,17 @@ inline std::vector<BatteryInfo> collectBatteries() {
                 if (parsed && *parsed > 0) {
                     design_voltage_mv = *parsed;
                 }
-            } else if (key == "EstimatedRunTime" || key == "BatteryLifeTime") {
+            } else if (key == "EstimatedRunTime") {
                 const auto parsed = parseLongLongPrefix(value);
                 if (parsed && *parsed > 0 && *parsed != 71582788) {
                     estimated_runtime_min = *parsed;
                 }
+            } else if (key == "FullCapacity") {
+                const auto parsed = parseLongLongPrefix(value);
+                if (parsed && *parsed > 0) full_capacity = *parsed;
+            } else if (key == "DesignCapacity") {
+                const auto parsed = parseLongLongPrefix(value);
+                if (parsed && *parsed > 0) design_capacity = *parsed;
             }
         }
     }
@@ -64,7 +76,10 @@ inline std::vector<BatteryInfo> collectBatteries() {
 
             if (status.BatteryLifePercent != 255) {
                 info.capacity = status.BatteryLifePercent;
-                info.health_percent = status.BatteryLifePercent;
+            }
+            if (full_capacity && design_capacity) {
+                info.health_percent = 100.0 * static_cast<double>(*full_capacity) /
+                                      static_cast<double>(*design_capacity);
             }
 
             if (design_voltage_mv) {
@@ -79,8 +94,11 @@ inline std::vector<BatteryInfo> collectBatteries() {
         }
     }
 #else
-    const auto entries = listDirectory("/sys/class/power_supply");
-    for (const auto& entry : entries) {
+    const DirectoryListing entries = listDirectory("/sys/class/power_supply");
+    if (entries.error && collection_error != nullptr) {
+        *collection_error = "/sys/class/power_supply: " + entries.error.message();
+    }
+    for (const fs::path& entry : entries.entries) {
         const std::string name = entry.filename().string();
         if (!startsWith(name, "BAT")) {
             continue;
@@ -110,9 +128,11 @@ inline std::vector<BatteryInfo> collectBatteries() {
     return batteries;
 }
 
-inline std::vector<std::pair<std::string, std::optional<long long>>> collectAcAdapters() {
+inline std::vector<std::pair<std::string, std::optional<long long>>> collectAcAdapters(
+    std::string* collection_error = nullptr) {
     std::vector<std::pair<std::string, std::optional<long long>>> adapters;
 #ifdef _WIN32
+    (void)collection_error;
     SYSTEM_POWER_STATUS status;
     if (GetSystemPowerStatus(&status)) {
         if (status.ACLineStatus == 0)
@@ -121,8 +141,11 @@ inline std::vector<std::pair<std::string, std::optional<long long>>> collectAcAd
             adapters.push_back({"AC", 1});
     }
 #else
-    const auto entries = listDirectory("/sys/class/power_supply");
-    for (const auto& entry : entries) {
+    const DirectoryListing entries = listDirectory("/sys/class/power_supply");
+    if (entries.error && collection_error != nullptr) {
+        *collection_error = "/sys/class/power_supply: " + entries.error.message();
+    }
+    for (const fs::path& entry : entries.entries) {
         const std::string name = entry.filename().string();
         const std::string type = readFirstLine((entry / "type").string()).value_or("");
         if (!startsWith(name, "AC") && type != "Mains") {
@@ -136,17 +159,22 @@ inline std::vector<std::pair<std::string, std::optional<long long>>> collectAcAd
 
 inline void printBatterySection() {
     printSectionHeader("BATTERY HEALTH");
-    const auto batteries = collectBatteries();
+    std::string battery_error;
+    const auto batteries = collectBatteries(&battery_error);
+    const std::string unavailable = colorize("N/A", ansi::YELLOW);
     if (batteries.empty()) {
-        printKeyValue("Battery", colorize("No battery detected", ansi::YELLOW));
+        printKeyValue(
+            "Battery",
+            colorize(battery_error.empty() ? "No battery detected" : battery_error, ansi::YELLOW));
     } else {
         for (const auto& battery : batteries) {
             printSubHeader("Battery " + battery.name);
             printKeyValue("  Status", battery.status);
-#ifdef _WIN32
             printKeyValue("  Capacity",
-                          battery.capacity ? colorByPercent(static_cast<double>(*battery.capacity))
-                                           : colorize("reported by driver only", ansi::YELLOW));
+                          battery.capacity
+                              ? colorCapacityPercent(static_cast<double>(*battery.capacity))
+                              : unavailable);
+#ifdef _WIN32
             if (battery.estimated_runtime_min) {
                 std::ostringstream runtime;
                 runtime << *battery.estimated_runtime_min << " min";
@@ -156,18 +184,14 @@ inline void printBatterySection() {
                               colorize("not reported (likely on AC)", ansi::YELLOW));
             }
             printKeyValue("  Health", battery.health_percent
-                                          ? colorByPercent(*battery.health_percent)
+                                          ? colorCapacityPercent(*battery.health_percent)
                                           : colorize("health telemetry not exposed", ansi::YELLOW));
 #else
-            printKeyValue("  Capacity", battery.capacity
-                                            ? colorByPercent(static_cast<double>(*battery.capacity))
-                                            : colorize("N/A", ansi::YELLOW));
-            printKeyValue("  Cycle Count", battery.cycle_count
-                                               ? std::to_string(*battery.cycle_count)
-                                               : colorize("N/A", ansi::YELLOW));
+            printKeyValue("  Cycle Count",
+                          battery.cycle_count ? std::to_string(*battery.cycle_count) : unavailable);
             printKeyValue("  Health", battery.health_percent
-                                          ? colorByPercent(*battery.health_percent)
-                                          : colorize("N/A", ansi::YELLOW));
+                                          ? colorCapacityPercent(*battery.health_percent)
+                                          : unavailable);
 #endif
             if (battery.voltage_now) {
                 std::ostringstream voltage;
@@ -198,14 +222,14 @@ inline void printBatterySection() {
         }
     }
 
-    const auto adapters = collectAcAdapters();
+    std::string adapter_error;
+    const auto adapters = collectAcAdapters(&adapter_error);
     if (adapters.empty()) {
-        printKeyValue(
-            "AC Adapter",
+        printKeyValue("AC Adapter",
 #ifdef _WIN32
-            colorize("state not exposed", ansi::YELLOW)
+                      colorize("state not exposed", ansi::YELLOW)
 #else
-            colorize("N/A", ansi::YELLOW)
+                      colorize(adapter_error.empty() ? "N/A" : adapter_error, ansi::YELLOW)
 #endif
         );
     } else {

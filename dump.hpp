@@ -1,12 +1,18 @@
 #pragma once
 
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
-#include <intrin.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <cpuid.h>
+#include <windows.h>
 #include <winreg.h>
 #endif
 
+#include "command.hpp"
 #include "utils.hpp"
 
 inline std::optional<double> readUptimeSeconds() {
@@ -26,7 +32,7 @@ inline std::optional<double> readUptimeSeconds() {
 #endif
 }
 
-inline std::pair<int, long long> countProcessesAndThreads() {
+inline std::pair<int, long long> countProcessesAndThreads(std::string* collection_error = nullptr) {
     int process_count = 0;
     long long thread_count = 0;
 #ifdef _WIN32
@@ -40,6 +46,8 @@ inline std::pair<int, long long> countProcessesAndThreads() {
             } while (Process32Next(process_snap, &entry));
         }
         CloseHandle(process_snap);
+    } else if (collection_error != nullptr) {
+        *collection_error = "process snapshot failed";
     }
 
     HANDLE thread_snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -52,10 +60,16 @@ inline std::pair<int, long long> countProcessesAndThreads() {
             } while (Thread32Next(thread_snap, &entry));
         }
         CloseHandle(thread_snap);
+    } else if (collection_error != nullptr) {
+        if (!collection_error->empty()) *collection_error += "; ";
+        *collection_error += "thread snapshot failed";
     }
 #else
-    const auto entries = listDirectory("/proc");
-    for (const auto& entry : entries) {
+    const DirectoryListing entries = listDirectory("/proc");
+    if (entries.error && collection_error != nullptr) {
+        *collection_error = "/proc: " + entries.error.message();
+    }
+    for (const fs::path& entry : entries.entries) {
         const std::string name = entry.filename().string();
         if (!isDigits(name)) {
             continue;
@@ -83,19 +97,26 @@ inline std::pair<int, long long> countProcessesAndThreads() {
     return {process_count, thread_count};
 }
 
+inline std::string normalizeWindowsProductName(std::string product, const std::string& build) {
+    const auto build_number = parseLongLongPrefix(build);
+    const std::string old_prefix = "Windows 10";
+    if (build_number && *build_number >= 22000 && startsWith(product, old_prefix)) {
+        product.replace(0, old_prefix.size(), "Windows 11");
+    }
+    return product;
+}
+
 inline std::string getOsPrettyName() {
 #ifdef _WIN32
-    const auto result = runCommand(
-        "powershell -NoProfile -Command "
-        "\"$os=Get-CimInstance Win32_OperatingSystem; if($os){$os.Caption + ' ' + $os.Version}\" "
-        "2>nul");
-    if (result.exit_code == 0) {
-        const std::string value = trim(result.output);
-        if (!value.empty()) {
-            return value;
-        }
-    }
-    return "Windows";
+    const char* key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+    const auto product = readWindowsRegistryString(HKEY_LOCAL_MACHINE, key, "ProductName");
+    const auto display = readWindowsRegistryString(HKEY_LOCAL_MACHINE, key, "DisplayVersion");
+    const auto build = readWindowsRegistryString(HKEY_LOCAL_MACHINE, key, "CurrentBuildNumber");
+    std::string result =
+        normalizeWindowsProductName(product.value_or("Windows"), build.value_or(""));
+    if (display && !display->empty()) result += " " + *display;
+    if (build && !build->empty()) result += " (build " + *build + ")";
+    return result;
 #else
     std::ifstream input("/etc/os-release");
     if (!input) {
@@ -246,19 +267,21 @@ inline std::string getWindowsArchitecture() {
 
 inline std::string detectVirtualization() {
 #ifdef _WIN32
-    int regs[4] = {0, 0, 0, 0};
-    __cpuid(regs, 1);
-    const bool has_hypervisor = (regs[2] & (1 << 31)) != 0;
+    unsigned int eax = 0;
+    unsigned int ebx = 0;
+    unsigned int ecx = 0;
+    unsigned int edx = 0;
+    __cpuid(1, eax, ebx, ecx, edx);
+    const bool has_hypervisor = (ecx & (1U << 31U)) != 0;
     if (!has_hypervisor) {
         return "none detected";
     }
 
-    int hv_regs[4] = {0, 0, 0, 0};
-    __cpuid(hv_regs, 0x40000000);
+    __cpuid(0x40000000, eax, ebx, ecx, edx);
     char hv_vendor[13] = {0};
-    std::memcpy(hv_vendor + 0, &hv_regs[1], 4);
-    std::memcpy(hv_vendor + 4, &hv_regs[2], 4);
-    std::memcpy(hv_vendor + 8, &hv_regs[3], 4);
+    std::memcpy(hv_vendor + 0, &ebx, 4);
+    std::memcpy(hv_vendor + 4, &ecx, 4);
+    std::memcpy(hv_vendor + 8, &edx, 4);
     const std::string vendor = toLower(std::string(hv_vendor));
 
     if (vendor.find("microsoft") != std::string::npos ||
@@ -279,9 +302,9 @@ inline std::string detectVirtualization() {
         return "xen";
     }
 
-    const auto fallback = runCommand(
-        "powershell -NoProfile -Command "
-        "\"$cs=Get-CimInstance Win32_ComputerSystem; if($cs){$cs.HypervisorPresent}\" 2>nul");
+    const CommandResult fallback = runPowerShell(
+        "$cs=Get-CimInstance Win32_ComputerSystem; "
+        "if($cs){[Console]::Out.WriteLine($cs.HypervisorPresent)}");
     const std::string value = toLower(trim(fallback.output));
     if (value == "true") {
         return "present (vendor=" + std::string(hv_vendor) + ")";
@@ -290,7 +313,7 @@ inline std::string detectVirtualization() {
     return "present (vendor unknown)";
 #else
     if (commandExists("systemd-detect-virt")) {
-        const auto result = runCommand("systemd-detect-virt 2>/dev/null");
+        const CommandResult result = runCommand({"systemd-detect-virt"});
         const std::string value = trim(result.output);
         if (result.exit_code == 0 && !value.empty() && value != "none") {
             return value;
@@ -305,7 +328,7 @@ inline std::string detectVirtualization() {
         return "lxc";
     }
 
-    if (fs::exists("/proc/xen")) {
+    if (pathExists("/proc/xen")) {
         return "xen";
     }
     const auto hypervisor = readFirstLine("/sys/hypervisor/type");
@@ -399,7 +422,7 @@ inline std::pair<std::string, std::string> getDefaultRouteAndInterface() {
         return {"UNAVAILABLE", "UNAVAILABLE"};
     }
 
-    const auto result = runCommand("ip route show default 2>/dev/null");
+    const CommandResult result = runCommand({"ip", "route", "show", "default"});
     const auto lines = splitLines(result.output);
     if (result.exit_code != 0 || lines.empty()) {
         return {"N/A", "N/A"};
@@ -488,22 +511,23 @@ inline PackageInventory collectInstalledPackages() {
     struct PackageCommand {
         std::string manager;
         std::string executable;
-        std::string command;
+        std::vector<std::string> arguments;
     };
 
     const std::vector<PackageCommand> commands = {
-        {"dpkg", "dpkg-query", R"(dpkg-query -W -f='${binary:Package}\n' 2>/dev/null)"},
-        {"rpm", "rpm", "rpm -qa 2>/dev/null"},
-        {"pacman", "pacman", "pacman -Qq 2>/dev/null"},
-        {"apk", "apk", "apk info 2>/dev/null"},
+        {"dpkg", "dpkg-query", {"dpkg-query", "-W", "-f=${binary:Package}\\n"}},
+        {"rpm", "rpm", {"rpm", "-qa"}},
+        {"pacman", "pacman", {"pacman", "-Qq"}},
+        {"apk", "apk", {"apk", "info"}},
     };
 
     for (const auto& candidate : commands) {
         if (!commandExists(candidate.executable)) {
             continue;
         }
-        const auto result = runCommand(candidate.command);
-        if (result.exit_code != 0 || trim(result.output).empty()) {
+        const CommandResult result =
+            runCommand(candidate.arguments, {std::chrono::milliseconds(5000), 1024 * 1024});
+        if (!result.ok() || trim(result.output).empty()) {
             continue;
         }
 
@@ -581,8 +605,10 @@ inline void printNetworkInterfacesFromSysfs() {
         }
 
         const std::string state = ips.empty() ? "down/unknown" : "up";
-        std::cout << "    " << name << " state=" << state << " mac=" << mac_text
-                  << " ip=" << ip_text.str() << "\n";
+        std::cout << "    " << sanitizeTerminalText(name)
+                  << " state=" << sanitizeTerminalText(state)
+                  << " mac=" << sanitizeTerminalText(mac_text)
+                  << " ip=" << sanitizeTerminalText(ip_text.str()) << "\n";
         printed = true;
     }
 
@@ -590,24 +616,25 @@ inline void printNetworkInterfacesFromSysfs() {
         std::cout << "    " << colorize("no adapters reported", ansi::YELLOW) << "\n";
     }
 #else
-    const auto entries = listDirectory("/sys/class/net");
-    if (entries.empty()) {
-        std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
+    const DirectoryListing entries = listDirectory("/sys/class/net");
+    if (entries.entries.empty()) {
+        const std::string detail = entries.error ? entries.error.message() : "UNAVAILABLE";
+        std::cout << "    " << colorize(detail, ansi::YELLOW) << "\n";
         return;
     }
 
-    for (const auto& entry : entries) {
+    for (const fs::path& entry : entries.entries) {
         const std::string name = entry.filename().string();
         const std::string state = readFirstLine((entry / "operstate").string()).value_or("N/A");
         const std::string mac = readFirstLine((entry / "address").string()).value_or("N/A");
-        std::cout << "    " << name << " state=" << state << " mac=" << mac << "\n";
+        std::cout << "    " << sanitizeTerminalText(name)
+                  << " state=" << sanitizeTerminalText(state)
+                  << " mac=" << sanitizeTerminalText(mac) << "\n";
     }
 #endif
 }
 
-inline void printMachineSummarySection() {
-    printSectionHeader("SIMPLE INFO");
-
+inline void printMachineIdentityValues(bool extended) {
     printKeyValue("OS", getOsPrettyName());
 
 #ifdef _WIN32
@@ -626,13 +653,19 @@ inline void printMachineSummarySection() {
 
     printKeyValue("Hostname", getHostname());
     printKeyValue("Current User", getCurrentUser());
+    if (extended) {
+        printKeyValue("User Count", getUserCount());
+        printKeyValue("Timestamp", getLocalTimestamp());
+    }
 
     const auto uptime = readUptimeSeconds();
     printKeyValue("Uptime", uptime ? formatUptime(*uptime) : colorize("N/A", ansi::YELLOW));
 
-    const auto [processes, threads] = countProcessesAndThreads();
+    std::string count_error;
+    const auto [processes, threads] = countProcessesAndThreads(&count_error);
     printKeyValue("Process Count", std::to_string(processes));
     printKeyValue("Thread Count", std::to_string(threads));
+    if (!count_error.empty()) printKeyValue("Process Enumeration", count_error);
 
     printKeyValue("Virtualization", detectVirtualization());
 
@@ -641,10 +674,15 @@ inline void printMachineSummarySection() {
     printKeyValue("Default Route", route);
 }
 
+inline void printMachineSummarySection() {
+    printSectionHeader("SIMPLE INFO");
+    printMachineIdentityValues(false);
+}
+
 #ifdef _WIN32
-inline std::vector<std::string> runPowerShellList(const std::string& script) {
-    const auto result = runCommand("powershell -NoProfile -Command \"" + script + "\" 2>nul");
-    if (result.exit_code != 0) {
+inline std::vector<std::string> runFixedPowerShellList(const std::string& script) {
+    const CommandResult result = runPowerShell(script);
+    if (!result.ok()) {
         return {};
     }
     std::vector<std::string> lines;
@@ -659,40 +697,7 @@ inline std::vector<std::string> runPowerShellList(const std::string& script) {
 
 inline void printMachineDumpSection() {
     printSectionHeader("INFO DUMP");
-
-    printKeyValue("OS", getOsPrettyName());
-
-#ifdef _WIN32
-    printKeyValue("Kernel", getWindowsKernelVersion());
-    printKeyValue("Architecture", getWindowsArchitecture());
-#else
-    struct utsname uname_data{};
-    if (::uname(&uname_data) == 0) {
-        printKeyValue("Kernel", uname_data.release);
-        printKeyValue("Architecture", uname_data.machine);
-    } else {
-        printKeyValue("Kernel", colorize("N/A", ansi::YELLOW));
-        printKeyValue("Architecture", colorize("N/A", ansi::YELLOW));
-    }
-#endif
-
-    printKeyValue("Hostname", getHostname());
-    printKeyValue("Current User", getCurrentUser());
-    printKeyValue("User Count", getUserCount());
-    printKeyValue("Timestamp", getLocalTimestamp());
-
-    const auto uptime = readUptimeSeconds();
-    printKeyValue("Uptime", uptime ? formatUptime(*uptime) : colorize("N/A", ansi::YELLOW));
-
-    const auto [processes, threads] = countProcessesAndThreads();
-    printKeyValue("Process Count", std::to_string(processes));
-    printKeyValue("Thread Count", std::to_string(threads));
-
-    printKeyValue("Virtualization", detectVirtualization());
-
-    const auto [route, iface] = getDefaultRouteAndInterface();
-    printKeyValue("Default Interface", iface);
-    printKeyValue("Default Route", route);
+    printMachineIdentityValues(true);
 
     const auto packages = collectInstalledPackages();
 #ifdef _WIN32
@@ -714,7 +719,7 @@ inline void printMachineDumpSection() {
     printSubHeader("USB Devices");
 #ifdef _WIN32
     {
-        const auto usb_rows = runPowerShellList(
+        const auto usb_rows = runFixedPowerShellList(
             "$rows=Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'USB' } | "
             "Select-Object -First 24 Name,Status; "
             "if($rows){$rows | ForEach-Object { $_.Name + ' [' + $_.Status + ']' }}");
@@ -722,14 +727,14 @@ inline void printMachineDumpSection() {
             std::cout << "    " << colorize("No USB devices reported", ansi::YELLOW) << "\n";
         } else {
             for (const auto& row : usb_rows) {
-                std::cout << "    " << row << "\n";
+                std::cout << "    " << sanitizeTerminalText(row) << "\n";
             }
         }
     }
 #else
     if (commandExists("lsusb")) {
-        const auto usb = runCommand("lsusb 2>/dev/null");
-        if (usb.exit_code == 0 && !trim(usb.output).empty()) {
+        const CommandResult usb = runCommand({"lsusb"});
+        if (usb.ok() && !trim(usb.output).empty()) {
             printBlockLines(usb.output);
         } else {
             std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";
@@ -743,7 +748,7 @@ inline void printMachineDumpSection() {
     printSubHeader("Storage Devices");
 #ifdef _WIN32
     {
-        const auto storage_rows = runPowerShellList(
+        const auto storage_rows = runFixedPowerShellList(
             "$rows=Get-CimInstance Win32_DiskDrive | Select-Object Model,Size,InterfaceType; "
             "if($rows){$rows | ForEach-Object { $_.Model + ' | ' + $_.InterfaceType + ' | ' + "
             "$_.Size }}");
@@ -751,14 +756,15 @@ inline void printMachineDumpSection() {
             std::cout << "    " << colorize("No storage devices reported", ansi::YELLOW) << "\n";
         } else {
             for (const auto& row : storage_rows) {
-                std::cout << "    " << row << "\n";
+                std::cout << "    " << sanitizeTerminalText(row) << "\n";
             }
         }
     }
 #else
     if (commandExists("lsblk")) {
-        const auto blk = runCommand("lsblk -o NAME,TYPE,SIZE,MODEL,TRAN,MOUNTPOINT 2>/dev/null");
-        if (blk.exit_code == 0 && !trim(blk.output).empty()) {
+        const CommandResult blk =
+            runCommand({"lsblk", "-o", "NAME,TYPE,SIZE,MODEL,TRAN,MOUNTPOINT"});
+        if (blk.ok() && !trim(blk.output).empty()) {
             printBlockLines(blk.output);
         } else {
             std::cout << "    " << colorize("UNAVAILABLE", ansi::YELLOW) << "\n";

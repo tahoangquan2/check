@@ -1,44 +1,121 @@
 #pragma once
 
+#include "command.hpp"
+#include "process.hpp"
 #include "utils.hpp"
+
+inline bool appendJsonCodepoint(std::string& output, unsigned int codepoint) {
+    if (codepoint <= 0x7fU) {
+        output.push_back(static_cast<char>(codepoint));
+    } else if (codepoint <= 0x7ffU) {
+        output.push_back(static_cast<char>(0xc0U | (codepoint >> 6U)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else if (codepoint <= 0xffffU) {
+        output.push_back(static_cast<char>(0xe0U | (codepoint >> 12U)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else if (codepoint <= 0x10ffffU) {
+        output.push_back(static_cast<char>(0xf0U | (codepoint >> 18U)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else {
+        return false;
+    }
+    return true;
+}
+
+inline int jsonHexDigit(char value) {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+}
+
+inline bool parseJsonString(const std::string& json, std::size_t& position, std::string& output) {
+    if (position >= json.size() || json[position] != '"') return false;
+    ++position;
+    while (position < json.size()) {
+        const unsigned char value = static_cast<unsigned char>(json[position++]);
+        if (value == '"') return true;
+        if (value < 0x20U) return false;
+        if (value != '\\') {
+            output.push_back(static_cast<char>(value));
+            continue;
+        }
+        if (position >= json.size()) return false;
+        const char escape = json[position++];
+        if (escape == '"' || escape == '\\' || escape == '/')
+            output.push_back(escape);
+        else if (escape == 'b')
+            output.push_back('\b');
+        else if (escape == 'f')
+            output.push_back('\f');
+        else if (escape == 'n')
+            output.push_back('\n');
+        else if (escape == 'r')
+            output.push_back('\r');
+        else if (escape == 't')
+            output.push_back('\t');
+        else if (escape == 'u') {
+            if (position + 4 > json.size()) return false;
+            unsigned int codepoint = 0;
+            for (int index = 0; index < 4; ++index) {
+                const int digit = jsonHexDigit(json[position++]);
+                if (digit < 0) return false;
+                codepoint = codepoint * 16U + static_cast<unsigned int>(digit);
+            }
+            if (codepoint >= 0xd800U && codepoint <= 0xdbffU) {
+                if (position + 6 > json.size() || json[position] != '\\' ||
+                    json[position + 1] != 'u') {
+                    return false;
+                }
+                position += 2;
+                unsigned int low = 0;
+                for (int index = 0; index < 4; ++index) {
+                    const int digit = jsonHexDigit(json[position++]);
+                    if (digit < 0) return false;
+                    low = low * 16U + static_cast<unsigned int>(digit);
+                }
+                if (low < 0xdc00U || low > 0xdfffU) return false;
+                codepoint = 0x10000U + ((codepoint - 0xd800U) << 10U) + (low - 0xdc00U);
+            } else if (codepoint >= 0xdc00U && codepoint <= 0xdfffU) {
+                return false;
+            }
+            if (!appendJsonCodepoint(output, codepoint)) return false;
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
 
 inline std::optional<std::string> extractJsonField(const std::string& json,
                                                    const std::string& key) {
-    const std::string needle = "\"" + key + "\"";
-    const auto key_pos = json.find(needle);
-    if (key_pos == std::string::npos) {
-        return std::nullopt;
-    }
-    const auto colon = json.find(':', key_pos + needle.size());
-    if (colon == std::string::npos) {
-        return std::nullopt;
-    }
-    const auto first_quote = json.find('"', colon + 1);
-    if (first_quote == std::string::npos) {
-        return std::nullopt;
-    }
-    const auto second_quote = json.find('"', first_quote + 1);
-    if (second_quote == std::string::npos || second_quote <= first_quote + 1) {
-        return std::nullopt;
-    }
-    return json.substr(first_quote + 1, second_quote - first_quote - 1);
-}
-
-inline void printBlockLinesLimited(const std::string& text, std::size_t limit) {
-    std::size_t printed = 0;
-    for (const auto& line : splitLines(text)) {
-        if (line.empty()) {
+    std::size_t position = 0;
+    while (position < json.size()) {
+        if (json[position] != '"') {
+            ++position;
             continue;
         }
-        std::cout << "    " << line << "\n";
-        ++printed;
-        if (printed >= limit) {
-            break;
+        std::string candidate;
+        if (!parseJsonString(json, position, candidate)) return std::nullopt;
+        std::size_t separator = position;
+        while (separator < json.size() &&
+               std::isspace(static_cast<unsigned char>(json[separator])) != 0) {
+            ++separator;
         }
+        if (candidate != key || separator >= json.size() || json[separator] != ':') continue;
+        position = separator + 1;
+        while (position < json.size() &&
+               std::isspace(static_cast<unsigned char>(json[position])) != 0) {
+            ++position;
+        }
+        std::string value;
+        if (!parseJsonString(json, position, value)) return std::nullopt;
+        return value;
     }
-    if (printed == 0) {
-        std::cout << "    " << colorize("No details returned", ansi::YELLOW) << "\n";
-    }
+    return std::nullopt;
 }
 
 #ifdef _WIN32
@@ -79,113 +156,75 @@ inline std::string getWindowsTailscaleInterfaceSummary() {
 }
 #endif
 
-inline SimpleCheck checkPing(const std::string& host, int probe_count = 2) {
+inline std::optional<std::string> parsePingAverage(const std::string& output) {
+    const std::vector<std::string> lines = splitLines(output);
+    for (const std::string& line : lines) {
+        const std::size_t average = line.find("Average =");
+        if (average != std::string::npos) return trim(line.substr(average + 9)) + " avg";
+        if (line.find("min/avg/max") == std::string::npos) continue;
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        std::string values = trim(line.substr(equals + 1));
+        const std::size_t space = values.find(' ');
+        if (space != std::string::npos) values.resize(space);
+        std::istringstream parser(values);
+        std::string part;
+        if (!std::getline(parser, part, '/')) continue;
+        if (std::getline(parser, part, '/')) return part + " ms avg";
+    }
+    return std::nullopt;
+}
+
+inline SimpleCheck checkPing(const std::string& host, int probe_count = 1) {
     if (!commandExists("ping")) {
         return {CheckState::Unavailable, "ping command not found"};
     }
 
     const int probes = std::max(1, probe_count);
 #ifdef _WIN32
-    const std::string cmd = "ping -n " + std::to_string(probes) + " -w 2000 " + host + " 2>nul";
-    const auto result = runCommand(cmd);
-    if (result.exit_code != 0) {
-        return {CheckState::Fail, "host unreachable"};
-    }
-
-    const auto lines = splitLines(result.output);
-    for (const auto& line : lines) {
-        if (line.find("Average =") != std::string::npos) {
-            std::string avg = line.substr(line.find("Average =") + 9);
-            return {CheckState::Pass, trim(avg) + " avg"};
-        }
-    }
-
-    return {CheckState::Pass, "reachable"};
+    const CommandResult result =
+        runCommand({"ping", "-n", std::to_string(probes), "-w", "2000", host},
+                   {std::chrono::milliseconds(3000), 64 * 1024});
 #else
-    const std::string cmd = "ping -c " + std::to_string(probes) + " -W 2 " + host + " 2>/dev/null";
-    const auto result = runCommand(cmd);
-    if (result.exit_code != 0) {
-        return {CheckState::Fail, "host unreachable"};
-    }
-
-    const auto lines = splitLines(result.output);
-    for (const auto& line : lines) {
-        if (line.find("min/avg/max") != std::string::npos) {
-            const auto eq_pos = line.find('=');
-            if (eq_pos != std::string::npos) {
-                std::string values = trim(line.substr(eq_pos + 1));
-                const auto space_pos = values.find(' ');
-                if (space_pos != std::string::npos) {
-                    values = values.substr(0, space_pos);
-                }
-
-                std::vector<std::string> parts;
-                std::stringstream parser(values);
-                std::string item;
-                while (std::getline(parser, item, '/')) {
-                    parts.push_back(item);
-                }
-                if (parts.size() >= 2) {
-                    return {CheckState::Pass, parts[1] + " ms avg"};
-                }
-            }
-        }
-    }
-
-    return {CheckState::Pass, "reachable"};
+    const CommandResult result = runCommand({"ping", "-c", std::to_string(probes), "-W", "2", host},
+                                            {std::chrono::milliseconds(3000), 64 * 1024});
 #endif
+    if (result.failure == CommandFailure::TimedOut) return {CheckState::Fail, "timed out (3s)"};
+    if (!result.ok()) return {CheckState::Fail, "host unreachable"};
+    return {CheckState::Pass, parsePingAverage(result.output).value_or("reachable")};
 }
 
-inline SimpleCheck checkDns() {
+inline SimpleCheck checkDns(const std::string& host) {
 #ifdef _WIN32
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        return {CheckState::Fail, "WSAStartup failed"};
-    }
-#endif
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    addrinfo* result = nullptr;
-    const int rc = ::getaddrinfo("example.com", "80", &hints, &result);
-    if (rc != 0 || result == nullptr) {
-#ifdef _WIN32
-        const std::string err = rc != 0 ? ::gai_strerrorA(rc) : "no address returned";
-        WSACleanup();
-        return {CheckState::Fail, err};
+    if (!commandExists("nslookup")) return {CheckState::Unavailable, "nslookup not found"};
+    const CommandResult result =
+        runCommand({"nslookup", host}, {std::chrono::milliseconds(3000), 64 * 1024});
 #else
-        return {CheckState::Fail, rc != 0 ? ::gai_strerror(rc) : "no address returned"};
+    if (!commandExists("getent")) return {CheckState::Unavailable, "getent not found"};
+    const CommandResult result =
+        runCommand({"getent", "ahosts", host}, {std::chrono::milliseconds(3000), 64 * 1024});
 #endif
-    }
-
-    char host[NI_MAXHOST] = {0};
-    std::string detail = "resolved";
-    if (::getnameinfo(result->ai_addr, result->ai_addrlen, host, sizeof(host), nullptr, 0,
-                      NI_NUMERICHOST) == 0) {
-        detail = std::string("resolved to ") + host;
-    }
-
-    ::freeaddrinfo(result);
-#ifdef _WIN32
-    WSACleanup();
-#endif
-    return {CheckState::Pass, detail};
+    if (result.failure == CommandFailure::TimedOut) return {CheckState::Fail, "timed out (3s)"};
+    return result.ok() && !trim(result.output).empty()
+               ? SimpleCheck{CheckState::Pass, "resolved"}
+               : SimpleCheck{CheckState::Fail, "resolution failed"};
 }
 
-inline SimpleCheck checkHttpLatency() {
+inline SimpleCheck checkHttpLatency(const std::string& url) {
     if (!commandExists("curl")) {
         return {CheckState::Unavailable, "curl command not found"};
     }
 
+    const CommandResult result =
+        runCommand({"curl", "--silent", "--output",
 #ifdef _WIN32
-    const auto result =
-        runCommand("curl -s -o NUL -w \"%{time_total}\" --max-time 5 https://example.com 2>nul");
+                    "NUL",
 #else
-    const auto result = runCommand(
-        "curl -s -o /dev/null -w \"%{time_total}\" --max-time 5 https://example.com 2>/dev/null");
+                    "/dev/null",
 #endif
-    if (result.exit_code != 0) {
+                    "--write-out", "%{time_total}", "--max-time", "5", url},
+                   {std::chrono::milliseconds(6000), 64 * 1024});
+    if (!result.ok()) {
         return {CheckState::Fail, "HTTP request failed"};
     }
 
@@ -205,7 +244,7 @@ inline void printTailscaleInternetInfo() {
 #ifdef _WIN32
     printKeyValue("  Tailscale Adapter", getWindowsTailscaleInterfaceSummary());
 #else
-    if (fs::exists("/sys/class/net/tailscale0")) {
+    if (pathExists("/sys/class/net/tailscale0")) {
         const std::string state =
             readFirstLine("/sys/class/net/tailscale0/operstate").value_or("N/A");
         const std::string mac = readFirstLine("/sys/class/net/tailscale0/address").value_or("N/A");
@@ -221,72 +260,45 @@ inline void printTailscaleInternetInfo() {
     }
 
     printKeyValue("  Tailscale CLI", colorize("available", ansi::GREEN));
-
-#ifdef _WIN32
-    const auto ip4 = runCommand("tailscale ip -4 2>nul");
-#else
-    const auto ip4 = runCommand("tailscale ip -4 2>/dev/null");
-#endif
-    if (ip4.exit_code == 0 && !trim(ip4.output).empty()) {
-        printKeyValue("  Tailscale IPv4", trim(ip4.output));
-    } else {
-        std::string detail = "Not assigned";
-#ifdef _WIN32
-        const auto status = runCommand("tailscale status --json 2>nul");
-#else
-        const auto status = runCommand("tailscale status --json 2>/dev/null");
-#endif
-        if (status.exit_code == 0) {
-            const auto state = extractJsonField(status.output, "BackendState");
-            if (state) {
-                detail += " (state=" + *state + ")";
-            }
-        }
-        printKeyValue("  Tailscale IPv4", colorize(detail, ansi::YELLOW));
-    }
-
-#ifdef _WIN32
-    const auto ip6 = runCommand("tailscale ip -6 2>nul");
-#else
-    const auto ip6 = runCommand("tailscale ip -6 2>/dev/null");
-#endif
-    if (ip6.exit_code == 0 && !trim(ip6.output).empty()) {
-        printKeyValue("  Tailscale IPv6", trim(ip6.output));
-    } else {
-        printKeyValue("  Tailscale IPv6", colorize("Not assigned", ansi::YELLOW));
-    }
-
-#ifdef _WIN32
-    const auto netcheck = runCommand("tailscale netcheck 2>nul");
-#else
-    const auto netcheck = runCommand("tailscale netcheck 2>/dev/null");
-#endif
-    if (!trim(netcheck.output).empty()) {
-        printSubHeader("Tailscale Netcheck");
-        printBlockLinesLimited(netcheck.output, 12);
-    } else {
-        printKeyValue("Tailscale Netcheck", colorize("No netcheck output", ansi::YELLOW));
-    }
 }
 
-inline void printInternetSection(const std::vector<ProcessUsage>& top_net) {
+inline void printInternetSection(const std::vector<ProcessUsage>& top_net, bool run_network,
+                                 const std::string& host, const std::string& url) {
     printSectionHeader("INTERNET");
 
-    printSubHeader("Ping Stress Check (2 probes each)");
-    const std::vector<std::string> ping_hosts = {"1.1.1.1",        "8.8.8.8",    "youtube.com",
-                                                 "codeforces.com", "github.com", "hquan.dev",
-                                                 "atcoder.jp"};
-    for (const auto& host : ping_hosts) {
-        const auto ping = checkPing(host, 3);
-        printKeyValue("  Ping " + host, stateLabel(ping.state) + " - " + ping.detail);
+    if (run_network) {
+        printSubHeader("Active Network Checks (one endpoint, bounded)");
+        std::cerr << "[network] ping " << sanitizeTerminalText(host) << " (3s budget)...\n";
+        auto started = std::chrono::steady_clock::now();
+        const SimpleCheck ping = checkPing(host);
+        double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        std::ostringstream ping_detail;
+        ping_detail << stateLabel(ping.state) << " - " << ping.detail << " (" << std::fixed
+                    << std::setprecision(2) << elapsed << " s)";
+        printKeyValue("  Ping " + host, ping_detail.str());
+
+        std::cerr << "[network] dns " << sanitizeTerminalText(host) << " (3s budget)...\n";
+        started = std::chrono::steady_clock::now();
+        const SimpleCheck dns = checkDns(host);
+        elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        std::ostringstream dns_detail;
+        dns_detail << stateLabel(dns.state) << " - " << dns.detail << " (" << std::fixed
+                   << std::setprecision(2) << elapsed << " s)";
+        printKeyValue("  DNS", dns_detail.str());
+
+        std::cerr << "[network] http " << sanitizeTerminalText(url) << " (6s budget)...\n";
+        started = std::chrono::steady_clock::now();
+        const SimpleCheck http = checkHttpLatency(url);
+        elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        std::ostringstream http_detail;
+        http_detail << stateLabel(http.state) << " - " << http.detail << " (" << std::fixed
+                    << std::setprecision(2) << elapsed << " s)";
+        printKeyValue("  HTTP", http_detail.str());
+
+    } else {
+        printKeyValue("Active Network Checks", "skipped (use --network)");
     }
-
-    printSubHeader("DNS & HTTP");
-    const SimpleCheck dns = checkDns();
-    printKeyValue("  DNS", stateLabel(dns.state) + " - " + dns.detail);
-
-    const SimpleCheck http = checkHttpLatency();
-    printKeyValue("  HTTP", stateLabel(http.state) + " - " + http.detail);
 
     printTailscaleInternetInfo();
 

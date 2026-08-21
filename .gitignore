@@ -1,2 +1,9 @@
 check
 check.exe
+test
+test.exe
+checktest
+checktest.exe
+*.o
+.qpp/
+checkbench.*.dat

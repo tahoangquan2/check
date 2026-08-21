@@ -3,47 +3,44 @@
 #include <cstring>
 #include <map>
 
+#include "process.hpp"
 #include "utils.hpp"
 
-inline std::map<std::string, long long> readMemInfo() {
+inline std::map<std::string, long long> parseMemInfo(const std::string& text) {
     std::map<std::string, long long> info;
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        const std::string key = line.substr(0, colon);
+        std::istringstream value_parser(trim(line.substr(colon + 1)));
+        long long value = 0;
+        if (value_parser >> value) info[key] = value;
+    }
+    return info;
+}
+
+inline std::map<std::string, long long> readMemInfo() {
 #ifdef _WIN32
+    std::map<std::string, long long> info;
     MEMORYSTATUSEX memInfo;
     memInfo.dwLength = sizeof(MEMORYSTATUSEX);
     if (GlobalMemoryStatusEx(&memInfo)) {
         info["MemTotal"] = memInfo.ullTotalPhys / 1024;
         info["MemFree"] = memInfo.ullAvailPhys / 1024;
         info["MemAvailable"] = memInfo.ullAvailPhys / 1024;
-        info["SwapTotal"] = memInfo.ullTotalPageFile / 1024;
-        info["SwapFree"] = memInfo.ullAvailPageFile / 1024;
+        info["CommitLimit"] = memInfo.ullTotalPageFile / 1024;
+        info["CommitAvailable"] = memInfo.ullAvailPageFile / 1024;
     }
-#else
-    std::ifstream input("/proc/meminfo");
-    if (!input) {
-        return info;
-    }
-
-    std::string line;
-    while (std::getline(input, line)) {
-        const auto colon = line.find(':');
-        if (colon == std::string::npos) {
-            continue;
-        }
-        const std::string key = line.substr(0, colon);
-        const std::string rest = trim(line.substr(colon + 1));
-        std::istringstream ss(rest);
-        long long value = 0;
-        ss >> value;
-        if (!ss.fail()) {
-            info[key] = value;
-        }
-    }
-#endif
     return info;
+#else
+    return parseMemInfo(readFile("/proc/meminfo").value_or(""));
+#endif
 }
 
-inline std::optional<double> runMemoryBenchmark() {
-    constexpr std::size_t size_bytes = 256ULL * 1024ULL * 1024ULL;
+inline std::optional<double> runMemoryBenchmark(std::size_t size_mebibytes = 64) {
+    const std::size_t size_bytes = size_mebibytes * 1024ULL * 1024ULL;
     char* buf = static_cast<char*>(std::malloc(size_bytes));
     if (!buf) {
         return std::nullopt;
@@ -56,6 +53,7 @@ inline std::optional<double> runMemoryBenchmark() {
     for (std::size_t i = 0; i < size_bytes; i += 4096) {
         dummy ^= buf[i];
     }
+    (void)dummy;
 
     const auto end = std::chrono::steady_clock::now();
     std::free(buf);
@@ -69,7 +67,7 @@ inline std::optional<double> runMemoryBenchmark() {
     return mbps;
 }
 
-inline void printRamSection(const std::vector<ProcessUsage>& top_ram) {
+inline void printRamSection(const std::vector<ProcessUsage>& top_ram, bool run_benchmark) {
     printSectionHeader("RAM");
 
     const auto mem = readMemInfo();
@@ -82,63 +80,49 @@ inline void printRamSection(const std::vector<ProcessUsage>& top_ram) {
     const long long mem_used =
         (mem_total >= 0 && mem_available >= 0) ? (mem_total - mem_available) : -1;
 
-    const long long swap_total = mem.count("SwapTotal") > 0 ? mem.at("SwapTotal") : -1;
-    const long long swap_free = mem.count("SwapFree") > 0 ? mem.at("SwapFree") : -1;
-    const long long swap_used = (swap_total >= 0 && swap_free >= 0) ? (swap_total - swap_free) : -1;
+    const std::string unavailable = colorize("N/A", ansi::YELLOW);
 
-    printKeyValue("RAM Total", mem_total >= 0 ? formatKilobytes(mem_total) :
-#ifdef _WIN32
-                                              colorize("memory total not exposed", ansi::YELLOW)
-#else
-                                              colorize("N/A", ansi::YELLOW)
-#endif
-    );
-    printKeyValue("RAM Used", mem_used >= 0 ? formatKilobytes(mem_used) :
-#ifdef _WIN32
-                                            colorize("memory usage not exposed", ansi::YELLOW)
-#else
-                                            colorize("N/A", ansi::YELLOW)
-#endif
-    );
+    printKeyValue("RAM Total", mem_total >= 0 ? formatKilobytes(mem_total) : unavailable);
+    printKeyValue("RAM Used", mem_used >= 0 ? formatKilobytes(mem_used) : unavailable);
     printKeyValue("RAM Available",
-                  mem_available >= 0 ? formatKilobytes(mem_available) :
+                  mem_available >= 0 ? formatKilobytes(mem_available) : unavailable);
 #ifdef _WIN32
-                                     colorize("memory availability not exposed", ansi::YELLOW)
+    const long long commit_limit = mem.count("CommitLimit") ? mem.at("CommitLimit") : -1;
+    const long long commit_available =
+        mem.count("CommitAvailable") ? mem.at("CommitAvailable") : -1;
+    const long long commit_used =
+        commit_limit >= 0 && commit_available >= 0 ? commit_limit - commit_available : -1;
+    printKeyValue("Commit Limit", commit_limit >= 0 ? formatKilobytes(commit_limit) : unavailable);
+    printKeyValue("Commit Used", commit_used >= 0 ? formatKilobytes(commit_used) : unavailable);
 #else
-                                     colorize("N/A", ansi::YELLOW)
+    const long long swap_total = mem.count("SwapTotal") ? mem.at("SwapTotal") : -1;
+    const long long swap_free = mem.count("SwapFree") ? mem.at("SwapFree") : -1;
+    const long long swap_used = swap_total >= 0 && swap_free >= 0 ? swap_total - swap_free : -1;
+    printKeyValue("Swap Total", swap_total >= 0 ? formatKilobytes(swap_total) : unavailable);
+    printKeyValue("Swap Used", swap_used >= 0 ? formatKilobytes(swap_used) : unavailable);
 #endif
-    );
-    printKeyValue("Swap Total", swap_total >= 0 ? formatKilobytes(swap_total) :
-#ifdef _WIN32
-                                                colorize("swap total not exposed", ansi::YELLOW)
-#else
-                                                colorize("N/A", ansi::YELLOW)
-#endif
-    );
-    printKeyValue("Swap Used", swap_used >= 0 ? formatKilobytes(swap_used) :
-#ifdef _WIN32
-                                              colorize("swap usage not exposed", ansi::YELLOW)
-#else
-                                              colorize("N/A", ansi::YELLOW)
-#endif
-    );
 
-    const auto bench = runMemoryBenchmark();
-    if (bench) {
-        std::ostringstream out;
-        out << std::fixed << std::setprecision(2) << *bench << " MB/s";
-        printKeyValue("RAM R/W Benchmark (256MB)", out.str());
+    if (run_benchmark) {
+        std::cerr << "[bench] ram: touching 64 MiB...\n";
+        const auto start = std::chrono::steady_clock::now();
+        const auto bench = runMemoryBenchmark();
+        const double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        if (bench) {
+            std::ostringstream out;
+            out << std::fixed << std::setprecision(2) << *bench << " MiB/s (" << elapsed << " s)";
+            printKeyValue("RAM R/W Benchmark (64MiB)", out.str());
+            recordCheck(CheckState::Pass);
+        } else {
+            printKeyValue("RAM R/W Benchmark (64MiB)", colorize("FAIL", ansi::RED));
+            recordCheck(CheckState::Fail);
+        }
     } else {
-        printKeyValue("RAM R/W Benchmark (256MB)", colorize("FAIL", ansi::RED));
+        printKeyValue("RAM Benchmark", "skipped (use --full)");
     }
 
     if (top_ram.empty()) {
-        printKeyValue("Top RAM Processes",
-#ifdef _WIN32
-                      colorize("process telemetry not exposed", ansi::YELLOW));
-#else
-                      colorize("UNAVAILABLE", ansi::YELLOW));
-#endif
+        printKeyValue("Top RAM Processes", unavailable);
     } else {
         printSubHeader("Top 10 Processes (by RAM)");
         printTopProcessTable(top_ram);

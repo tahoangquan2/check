@@ -108,7 +108,7 @@ inline std::vector<ServiceRuntimeUnit> listSystemdUnitsByState(const std::string
 }
 
 inline void printServiceRuntimeTable(const std::vector<ServiceRuntimeUnit>& rows,
-                                     std::size_t limit = 50) {
+                                     std::size_t limit = std::numeric_limits<std::size_t>::max()) {
     if (rows.empty()) {
         std::cout << "    " << colorize("N/A", ansi::YELLOW) << "\n";
         return;
@@ -121,10 +121,10 @@ inline void printServiceRuntimeTable(const std::vector<ServiceRuntimeUnit>& rows
     const std::size_t count = std::min(limit, rows.size());
     for (std::size_t index = 0; index < count; ++index) {
         const ServiceRuntimeUnit& row = rows[index];
-        std::cout << "    " << std::left << std::setw(44) << fitTableCell(row.unit, 43)
-                  << std::setw(9) << fitTableCell(row.load, 8) << std::setw(9)
-                  << fitTableCell(row.active, 8) << std::setw(12) << fitTableCell(row.sub, 11)
-                  << fitTableCell(row.description, 60) << "\n";
+        std::cout << "    " << std::left << std::setw(44) << sanitizeTerminalText(row.unit)
+                  << std::setw(9) << sanitizeTerminalText(row.load) << std::setw(9)
+                  << sanitizeTerminalText(row.active) << std::setw(12)
+                  << sanitizeTerminalText(row.sub) << sanitizeTerminalText(row.description) << "\n";
     }
     if (rows.size() > count) {
         std::cout << "    ... " << rows.size() - count << " more\n";
@@ -223,8 +223,9 @@ inline void printWindowsServiceTable(const std::vector<WindowsServiceRow>& rows,
     std::cout << "    " << std::left << std::setw(40) << "SERVICE" << "EXECUTABLE"
               << "\n";
     for (std::size_t i = 0; i < count; ++i) {
-        std::cout << "    " << std::left << std::setw(40) << fitTableCell(rows[i].name, 39)
-                  << fitTableCell(rows[i].exe_path.empty() ? "N/A" : rows[i].exe_path, 80) << "\n";
+        std::cout << "    " << std::left << std::setw(40) << sanitizeTerminalText(rows[i].name)
+                  << sanitizeTerminalText(rows[i].exe_path.empty() ? "N/A" : rows[i].exe_path)
+                  << "\n";
     }
     if (rows.size() > count) {
         std::cout << "    "
@@ -268,14 +269,14 @@ inline void printServicesSection() {
         printKeyValue("  " + state, std::to_string(count));
     }
 
-    populateWindowsServiceExePaths(running_services, 50);
-    populateWindowsServiceExePaths(stopped_services, 20);
+    populateWindowsServiceExePaths(running_services, running_services.size());
+    populateWindowsServiceExePaths(stopped_services, stopped_services.size());
 
-    printSubHeader("Running Services (first 50)");
-    printWindowsServiceTable(running_services, 50);
+    printSubHeader("Running Services (all)");
+    printWindowsServiceTable(running_services, running_services.size());
 
-    printSubHeader("Stopped Services (first 20)");
-    printWindowsServiceTable(stopped_services, 20);
+    printSubHeader("Stopped Services (all)");
+    printWindowsServiceTable(stopped_services, stopped_services.size());
     return;
 #endif
 
@@ -308,16 +309,16 @@ inline void printServicesSection() {
             printKeyValue("  " + state, std::to_string(count));
         }
 
-        printSubHeader("Service Unit Files (first 80)");
+        printSubHeader("All Service Unit Files");
         std::cout << "    " << std::left << std::setw(44) << "UNIT FILE" << std::setw(18) << "STATE"
                   << "PRESET"
                   << "\n";
-        const std::size_t count = std::min<std::size_t>(80, unit_files.size());
+        const std::size_t count = unit_files.size();
         for (std::size_t index = 0; index < count; ++index) {
             const ServiceUnitFile& unit = unit_files[index];
-            std::cout << "    " << std::left << std::setw(44) << fitTableCell(unit.unit, 43)
-                      << std::setw(18) << fitTableCell(unit.state, 17)
-                      << fitTableCell(unit.preset, 20) << "\n";
+            std::cout << "    " << std::left << std::setw(44) << sanitizeTerminalText(unit.unit)
+                      << std::setw(18) << sanitizeTerminalText(unit.state)
+                      << sanitizeTerminalText(unit.preset) << "\n";
         }
         if (unit_files.size() > count) {
             std::cout << "    ... " << unit_files.size() - count << " more\n";

@@ -18,9 +18,7 @@ check$(EXE): check.cpp $(HEADERS)
 $(TESTBIN): test.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) test.cpp $(LDLIBS) -o $@
 
-test: $(TESTBIN)
-	./$(TESTBIN)
+test: check$(EXE) $(TESTBIN)
+	./$(TESTBIN) ./check$(EXE)
 
-smoke: check$(EXE)
-	./check$(EXE) --help
-	./check$(EXE) --no-color --section summary
+smoke: test

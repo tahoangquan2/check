@@ -39,7 +39,7 @@ inline std::map<std::string, long long> readMemInfo() {
 #endif
 }
 
-inline std::optional<double> runMemoryBenchmark(std::size_t size_mebibytes = 64) {
+inline std::optional<double> runMemoryBenchmark(std::size_t size_mebibytes = 256) {
     const std::size_t size_bytes = size_mebibytes * 1024ULL * 1024ULL;
     char* buf = static_cast<char*>(std::malloc(size_bytes));
     if (!buf) {
@@ -103,7 +103,7 @@ inline void printRamSection(const std::vector<ProcessUsage>& top_ram, bool run_b
 #endif
 
     if (run_benchmark) {
-        std::cerr << "[bench] ram: touching 64 MiB...\n";
+        std::cerr << "[bench] ram: touching 256 MiB...\n";
         const auto start = std::chrono::steady_clock::now();
         const auto bench = runMemoryBenchmark();
         const double elapsed =
@@ -111,10 +111,10 @@ inline void printRamSection(const std::vector<ProcessUsage>& top_ram, bool run_b
         if (bench) {
             std::ostringstream out;
             out << std::fixed << std::setprecision(2) << *bench << " MiB/s (" << elapsed << " s)";
-            printKeyValue("RAM R/W Benchmark (64MiB)", out.str());
+            printKeyValue("RAM R/W Benchmark (256MiB)", out.str());
             recordCheck(CheckState::Pass);
         } else {
-            printKeyValue("RAM R/W Benchmark (64MiB)", colorize("FAIL", ansi::RED));
+            printKeyValue("RAM R/W Benchmark (256MiB)", colorize("FAIL", ansi::RED));
             recordCheck(CheckState::Fail);
         }
     } else {

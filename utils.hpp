@@ -57,7 +57,7 @@ constexpr const char* GREEN = "\033[32m";
 constexpr const char* YELLOW = "\033[33m";
 constexpr const char* MAGENTA = "\033[35m";
 constexpr const char* CYAN = "\033[36m";
-}  // namespace ansi
+}
 
 enum class CheckState { Pass, Fail, Unavailable };
 
@@ -587,7 +587,8 @@ inline std::size_t countNonEmptyLines(const std::vector<std::string>& lines) {
     return count;
 }
 
-inline void printBlockLines(const std::string& text, std::size_t limit = 100) {
+inline void printBlockLines(const std::string& text,
+                            std::size_t limit = std::numeric_limits<std::size_t>::max()) {
     const auto lines = splitLines(text);
     const std::size_t non_empty_lines = countNonEmptyLines(lines);
     if (non_empty_lines == 0) {

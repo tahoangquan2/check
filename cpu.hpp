@@ -199,15 +199,15 @@ struct CpuTarget {
 #endif
 };
 
-inline std::vector<CpuTarget> benchmarkCpuTargets(std::size_t limit = 8) {
+inline std::vector<CpuTarget> benchmarkCpuTargets() {
     std::vector<CpuTarget> targets;
 #ifdef _WIN32
     const WORD groups = GetActiveProcessorGroupCount();
     int logical_id = 0;
-    for (WORD group = 0; group < groups && targets.size() < limit; ++group) {
+    for (WORD group = 0; group < groups; ++group) {
         const DWORD count = GetActiveProcessorCount(group);
         const DWORD usable = std::min<DWORD>(count, static_cast<DWORD>(sizeof(KAFFINITY) * 8));
-        for (DWORD processor = 0; processor < usable && targets.size() < limit; ++processor) {
+        for (DWORD processor = 0; processor < usable; ++processor) {
             targets.push_back({logical_id++, group, static_cast<BYTE>(processor)});
         }
         logical_id += static_cast<int>(count - usable);
@@ -216,7 +216,7 @@ inline std::vector<CpuTarget> benchmarkCpuTargets(std::size_t limit = 8) {
     cpu_set_t allowed;
     CPU_ZERO(&allowed);
     if (::sched_getaffinity(0, sizeof(allowed), &allowed) != 0) return targets;
-    for (int processor = 0; processor < CPU_SETSIZE && targets.size() < limit; ++processor) {
+    for (int processor = 0; processor < CPU_SETSIZE; ++processor) {
         if (CPU_ISSET(processor, &allowed)) targets.push_back({processor, processor});
     }
 #endif
@@ -241,7 +241,7 @@ struct CpuBenchmarkWorker {
 #endif
         const auto start = std::chrono::steady_clock::now();
         volatile double value = 1.0;
-        for (int i = 0; i < 5000000; ++i) value *= 1.000001;
+        for (int i = 0; i < 100000000; ++i) value *= 1.000001;
         const auto end = std::chrono::steady_clock::now();
         *result = std::chrono::duration<double, std::milli>(end - start).count();
         (void)value;
@@ -338,9 +338,8 @@ inline void printCpuSection(const std::vector<ProcessUsage>& top_cpu, bool run_b
 
     if (run_benchmark) {
         const std::vector<CpuTarget> targets = benchmarkCpuTargets();
-        printSubHeader("CPU Benchmark (5M ops, at most 8 legal targets)");
-        std::cerr << "[bench] cpu: " + std::to_string(targets.size()) +
-                         " sampled logical processors...\n";
+        printSubHeader("CPU Benchmark (100M ops per available logical processor)");
+        std::cerr << "[bench] cpu: " + std::to_string(targets.size()) + " logical processors...\n";
         bool all_targets_worked = true;
         for (const CpuTarget& target : targets) {
             const auto bench = runBenchmarkOnTarget(target);

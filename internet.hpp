@@ -175,21 +175,19 @@ inline std::optional<std::string> parsePingAverage(const std::string& output) {
     return std::nullopt;
 }
 
-inline SimpleCheck checkPing(const std::string& host, int probe_count = 1) {
+inline SimpleCheck checkPing(const std::string& host) {
     if (!commandExists("ping")) {
         return {CheckState::Unavailable, "ping command not found"};
     }
 
-    const int probes = std::max(1, probe_count);
 #ifdef _WIN32
-    const CommandResult result =
-        runCommand({"ping", "-n", std::to_string(probes), "-w", "2000", host},
-                   {std::chrono::milliseconds(3000), 64 * 1024});
+    const CommandResult result = runCommand({"ping", "-n", "3", "-w", "2000", host},
+                                            {std::chrono::milliseconds(10000), 64 * 1024});
 #else
-    const CommandResult result = runCommand({"ping", "-c", std::to_string(probes), "-W", "2", host},
-                                            {std::chrono::milliseconds(3000), 64 * 1024});
+    const CommandResult result = runCommand({"ping", "-c", "3", "-W", "2", host},
+                                            {std::chrono::milliseconds(10000), 64 * 1024});
 #endif
-    if (result.failure == CommandFailure::TimedOut) return {CheckState::Fail, "timed out (3s)"};
+    if (result.failure == CommandFailure::TimedOut) return {CheckState::Fail, "timed out (10s)"};
     if (!result.ok()) return {CheckState::Fail, "host unreachable"};
     return {CheckState::Pass, parsePingAverage(result.output).value_or("reachable")};
 }
@@ -238,7 +236,7 @@ inline SimpleCheck checkHttpLatency(const std::string& url) {
     return {CheckState::Fail, "unable to parse latency"};
 }
 
-inline void printTailscaleInternetInfo() {
+inline void printTailscaleInternetInfo(bool full) {
     printSubHeader("Tailscale");
 
 #ifdef _WIN32
@@ -260,28 +258,63 @@ inline void printTailscaleInternetInfo() {
     }
 
     printKeyValue("  Tailscale CLI", colorize("available", ansi::GREEN));
+    if (!full) return;
+
+    const CommandResult status = runCommand({"tailscale", "status", "--json"});
+    const auto state = status.ok() ? extractJsonField(status.output, "BackendState") : std::nullopt;
+    printKeyValue("  Tailscale State", state.value_or("unavailable"));
+    for (const std::string version : {"4", "6"}) {
+        const CommandResult ip = runCommand({"tailscale", "ip", "-" + version});
+        printKeyValue("  Tailscale IPv" + version,
+                      ip.ok() && !trim(ip.output).empty() ? trim(ip.output) : "Not assigned");
+    }
+
+    std::cerr << "[network] tailscale netcheck (15s budget)...\n";
+    const CommandResult netcheck =
+        runCommand({"tailscale", "netcheck"}, {std::chrono::milliseconds(15000), 1024 * 1024});
+    printSubHeader("Tailscale Netcheck");
+    if (!trim(netcheck.output).empty()) printBlockLines(netcheck.output);
+    if (!netcheck.ok()) {
+        printKeyValue("  Netcheck Result", netcheck.failure == CommandFailure::TimedOut
+                                               ? "timed out (15s)"
+                                               : "failed or unavailable");
+    } else if (trim(netcheck.output).empty()) {
+        printKeyValue("  Netcheck Result", "No netcheck output");
+    }
 }
 
-inline void printInternetSection(const std::vector<ProcessUsage>& top_net, bool run_network,
-                                 const std::string& host, const std::string& url) {
+inline void printInternetSection(const std::vector<ProcessUsage>& top_net, bool run_network) {
     printSectionHeader("INTERNET");
 
     if (run_network) {
-        printSubHeader("Active Network Checks (one endpoint, bounded)");
-        std::cerr << "[network] ping " << sanitizeTerminalText(host) << " (3s budget)...\n";
+        printSubHeader("Ping (3 probes per host)");
+        std::cout << "    " << std::left << std::setw(20) << "HOST" << std::setw(14) << "RESULT"
+                  << std::setw(30) << "LATENCY / DETAIL" << "ELAPSED\n"
+                  << std::flush;
+        for (const std::string host : {"1.1.1.1", "8.8.8.8", "youtube.com", "codeforces.com",
+                                       "github.com", "hquan.dev", "atcoder.jp"}) {
+            const auto started = std::chrono::steady_clock::now();
+            const SimpleCheck ping = checkPing(host);
+            const double elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            const std::string result = stateLabel(ping.state);
+            const std::size_t result_width = ping.state == CheckState::Unavailable ? 11 : 4;
+            std::ostringstream duration;
+            duration << std::fixed << std::setprecision(2) << elapsed << " s";
+            std::cout << "    " << std::left << std::setw(20) << host << result
+                      << std::string(14 - result_width, ' ') << std::setw(30)
+                      << sanitizeTerminalText(ping.detail) << duration.str() << "\n"
+                      << std::flush;
+        }
+
+        printSubHeader("DNS & HTTP");
+        const std::string host = "example.com";
+        const std::string url = "https://example.com";
+        std::cerr << "[network] dns " << sanitizeTerminalText(host) << " (3s budget)...\n";
         auto started = std::chrono::steady_clock::now();
-        const SimpleCheck ping = checkPing(host);
+        const SimpleCheck dns = checkDns(host);
         double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-        std::ostringstream ping_detail;
-        ping_detail << stateLabel(ping.state) << " - " << ping.detail << " (" << std::fixed
-                    << std::setprecision(2) << elapsed << " s)";
-        printKeyValue("  Ping " + host, ping_detail.str());
-
-        std::cerr << "[network] dns " << sanitizeTerminalText(host) << " (3s budget)...\n";
-        started = std::chrono::steady_clock::now();
-        const SimpleCheck dns = checkDns(host);
-        elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
         std::ostringstream dns_detail;
         dns_detail << stateLabel(dns.state) << " - " << dns.detail << " (" << std::fixed
                    << std::setprecision(2) << elapsed << " s)";
@@ -297,10 +330,10 @@ inline void printInternetSection(const std::vector<ProcessUsage>& top_net, bool 
         printKeyValue("  HTTP", http_detail.str());
 
     } else {
-        printKeyValue("Active Network Checks", "skipped (use --network)");
+        printKeyValue("Active Network Checks", "skipped (use --full)");
     }
 
-    printTailscaleInternetInfo();
+    printTailscaleInternetInfo(run_network);
 
     if (top_net.empty()) {
         printKeyValue("Top Network Processes",

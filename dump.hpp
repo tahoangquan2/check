@@ -634,6 +634,27 @@ inline void printNetworkInterfacesFromSysfs() {
 #endif
 }
 
+inline void printPowerSupplySummary() {
+#ifndef _WIN32
+    printSubHeader("Power Supply Devices");
+    const DirectoryListing entries = listDirectory("/sys/class/power_supply");
+    if (entries.entries.empty()) {
+        printKeyValue("Power Supplies", entries.error ? entries.error.message() : "None detected");
+    }
+    for (const fs::path& entry : entries.entries) {
+        std::ostringstream detail;
+        detail << readFirstLine((entry / "type").string()).value_or("N/A");
+        const auto status = readFirstLine((entry / "status").string());
+        const auto online = readLongFromFile((entry / "online").string());
+        const auto capacity = readLongFromFile((entry / "capacity").string());
+        if (status) detail << " status=" << *status;
+        if (online) detail << " online=" << *online;
+        if (capacity) detail << " capacity=" << *capacity << "%";
+        printKeyValue(entry.filename().string(), detail.str());
+    }
+#endif
+}
+
 inline void printMachineIdentityValues(bool extended) {
     printKeyValue("OS", getOsPrettyName());
 
@@ -716,12 +737,18 @@ inline void printMachineDumpSection() {
     }
 #endif
 
+    printSubHeader("Installed Packages");
+    if (packages.packages.empty()) printKeyValue("Packages", "unavailable");
+    for (const std::string& package : packages.packages) {
+        std::cout << "    " << sanitizeTerminalText(package) << "\n";
+    }
+
     printSubHeader("USB Devices");
 #ifdef _WIN32
     {
         const auto usb_rows = runFixedPowerShellList(
             "$rows=Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'USB' } | "
-            "Select-Object -First 24 Name,Status; "
+            "Select-Object Name,Status; "
             "if($rows){$rows | ForEach-Object { $_.Name + ' [' + $_.Status + ']' }}");
         if (usb_rows.empty()) {
             std::cout << "    " << colorize("No USB devices reported", ansi::YELLOW) << "\n";
@@ -775,5 +802,15 @@ inline void printMachineDumpSection() {
     }
 #endif
 
+    printPowerSupplySummary();
     printNetworkInterfacesFromSysfs();
+#ifndef _WIN32
+    printSubHeader("Interface / IP Summary (`ip -br addr`)");
+    const CommandResult addresses = runCommand({"ip", "-br", "addr"});
+    if (addresses.ok()) {
+        printBlockLines(addresses.output);
+    } else {
+        printKeyValue("IP Addresses", "unavailable: ip command failed or missing");
+    }
+#endif
 }
